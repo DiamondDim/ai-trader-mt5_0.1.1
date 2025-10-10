@@ -1,0 +1,36 @@
+
+
+{
+    "mt5": {
+        "login": 2000067543,
+        "server": "AlfaForex",
+        "password": "X7V252gm@a",
+        "demo": true
+    },
+    "trading": {
+        "symbol": "EURUSDrfd",
+        "timeframe": "M15",
+        "risk_per_trade": 0.02,
+        "max_daily_loss": 0.05,
+        "max_positions": 3,
+        "lot_size": 0.01
+    },
+    "ml": {
+        "model_type": "gradient_boosting",
+        "model_path": "models/trading_model.joblib",
+        "retrain_interval": "1 day",
+        "confidence_threshold": 0.6
+    },
+    "backtest": {
+        "initial_capital": 10000,
+        "commission": 0.0002,
+        "start_date": "2023-01-01",
+        "end_date": "2024-01-01"
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "logs/trading.log",
+        "max_size_mb": 10,
+        "backup_count": 5
+    }
+}

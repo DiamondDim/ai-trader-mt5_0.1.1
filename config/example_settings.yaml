@@ -1,0 +1,35 @@
+# Example Configuration for AI Trading Robot
+# COPY this file to settings.yaml and fill in your details
+
+# MT5 Connection Settings
+mt5:
+  path: "C:/Program Files/MetaTrader 5/terminal64.exe"  # Path to MT5 terminal
+  server: "AlfaForexRU-Real"                            # Your broker server
+  login: 2000067543                                        # Your account number
+  password: "X7V252gm@a"                             # Your password
+  timeout: 60000
+
+# Trading Settings
+trading:
+  symbol: "EURUSDrfd"                                   # Trading symbol
+  timeframe: "M15"                                      # Timeframe (M1, M5, M15, H1, H4, D1)
+  risk_per_trade: 0.01                                  # Risk per trade (1%)
+  max_daily_loss: 0.03                                  # Max daily loss (3%)
+  lot_size: 0.01                                        # Lot size
+  max_open_positions: 2                                 # Max open positions
+
+# ML Model Settings
+model:
+  model_type: "GradientBoosting"
+  use_ensemble: false
+  model_params:
+    n_estimators: 100
+    max_depth: 3
+    learning_rate: 0.1
+    random_state: 42
+
+# Machine Learning Settings
+ml:
+  model_path: "models/trained_model.pkl"
+  test_size: 0.3
+  target_horizon: 5
