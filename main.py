@@ -55,7 +55,8 @@ def train_model(config, symbol):
     try:
         # Загрузка данных
         print(f"📊 Загрузка данных для {symbol}...")
-        data = client.get_historical_data(symbol, bars=1000)
+        data_bars = config.get('ml', {}).get('data_bars', 2000)
+        data = client.get_historical_data(symbol, bars=data_bars)
         if data is None or data.empty:
             print("❌ Не удалось загрузить данные")
             return False

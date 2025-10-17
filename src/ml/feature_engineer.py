@@ -12,6 +12,43 @@ class FeatureEngineer:
     def __init__(self, config: dict):
         self.config = config
         self.feature_names = []
+        self._initialize_feature_names()
+
+    def _initialize_feature_names(self):
+        """Инициализация списка имен признаков"""
+        # Базовые ценовые признаки
+        base_features = ['open', 'high', 'low', 'close', 'tick_volume']
+
+        # Технические индикаторы
+        technical_features = [
+            'sma_10', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'macd', 'macd_signal', 'macd_hist', 'rsi',
+            'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'atr',
+            'volume_sma', 'volume_ratio'
+        ]
+
+        # Статистические признаки
+        statistical_features = [
+            'volatility_5', 'volatility_10', 'volatility_20',
+            'returns_1', 'returns_5', 'returns_10',
+            'rolling_skew_10', 'rolling_skew_20',
+            'rolling_kurtosis_10', 'rolling_kurtosis_20'
+        ]
+
+        # Временные признаки
+        time_features = [
+            'hour_sin', 'hour_cos', 'day_sin', 'day_cos'
+        ]
+
+        # Лаггированные признаки
+        lagged_features = [
+            'close_lag_1', 'close_lag_2', 'close_lag_3', 'close_lag_5',
+            'volume_lag_1', 'volume_lag_2', 'volume_lag_3', 'volume_lag_5',
+            'returns_lag_1', 'returns_lag_2', 'returns_lag_3'
+        ]
+
+        self.feature_names = (base_features + technical_features +
+                              statistical_features + time_features + lagged_features)
 
     def prepare_features(self, data: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Подготовка признаков из рыночных данных"""
@@ -27,13 +64,18 @@ class FeatureEngineer:
             df = self._create_lagged_features(df)
 
             # Удаляем строки с NaN значениями
+            initial_count = len(df)
             df = df.dropna()
+            final_count = len(df)
 
-            print(f"Подготовка фич завершена. Создано {len(self.feature_names)} признаков")
+            print(f"✅ Подготовка фич завершена. Создано {len(self.feature_names)} признаков")
+            print(f"📊 Данные: было {initial_count}, стало {final_count} строк после очистки")
             return df
 
         except Exception as e:
             print(f"❌ Ошибка подготовки фич: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
 
     def _create_basic_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -41,25 +83,25 @@ class FeatureEngineer:
         print("Добавление базовых технических индикаторов...")
 
         # Простые скользящие средние
-        df['sma_10'] = df['close'].rolling(window=10).mean()
-        df['sma_20'] = df['close'].rolling(window=20).mean()
-        df['sma_50'] = df['close'].rolling(window=50).mean()
+        df['sma_10'] = df['close'].rolling(window=10, min_periods=1).mean()
+        df['sma_20'] = df['close'].rolling(window=20, min_periods=1).mean()
+        df['sma_50'] = df['close'].rolling(window=50, min_periods=1).mean()
 
         # Экспоненциальные скользящие средние
-        df['ema_12'] = df['close'].ewm(span=12).mean()
-        df['ema_26'] = df['close'].ewm(span=26).mean()
+        df['ema_12'] = df['close'].ewm(span=12, min_periods=1).mean()
+        df['ema_26'] = df['close'].ewm(span=26, min_periods=1).mean()
 
         # MACD
         df['macd'] = df['ema_12'] - df['ema_26']
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
+        df['macd_signal'] = df['macd'].ewm(span=9, min_periods=1).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
 
         # RSI
         df['rsi'] = self._calculate_rsi(df['close'], window=14)
 
         # Bollinger Bands
-        df['bb_middle'] = df['close'].rolling(window=20).mean()
-        bb_std = df['close'].rolling(window=20).std()
+        df['bb_middle'] = df['close'].rolling(window=20, min_periods=1).mean()
+        bb_std = df['close'].rolling(window=20, min_periods=1).std()
         df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
         df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
@@ -68,8 +110,8 @@ class FeatureEngineer:
         df['atr'] = self._calculate_atr(df, window=14)
 
         # Volume-based features
-        df['volume_sma'] = df['tick_volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['tick_volume'] / df['volume_sma']
+        df['volume_sma'] = df['tick_volume'].rolling(window=20, min_periods=1).mean()
+        df['volume_ratio'] = df['tick_volume'] / df['volume_sma'].replace(0, 1)  # Защита от деления на 0
 
         return df
 
@@ -78,9 +120,9 @@ class FeatureEngineer:
         print("Добавление статистических фич...")
 
         # Волатильность
-        df['volatility_5'] = df['close'].pct_change().rolling(window=5).std()
-        df['volatility_10'] = df['close'].pct_change().rolling(window=10).std()
-        df['volatility_20'] = df['close'].pct_change().rolling(window=20).std()
+        df['volatility_5'] = df['close'].pct_change().rolling(window=5, min_periods=1).std()
+        df['volatility_10'] = df['close'].pct_change().rolling(window=10, min_periods=1).std()
+        df['volatility_20'] = df['close'].pct_change().rolling(window=20, min_periods=1).std()
 
         # Процентные изменения
         df['returns_1'] = df['close'].pct_change(1)
@@ -88,10 +130,10 @@ class FeatureEngineer:
         df['returns_10'] = df['close'].pct_change(10)
 
         # Статистические моменты
-        df['rolling_skew_10'] = df['returns_1'].rolling(window=10).skew()
-        df['rolling_skew_20'] = df['returns_1'].rolling(window=20).skew()
-        df['rolling_kurtosis_10'] = df['returns_1'].rolling(window=10).kurt()
-        df['rolling_kurtosis_20'] = df['returns_1'].rolling(window=20).kurt()
+        df['rolling_skew_10'] = df['returns_1'].rolling(window=10, min_periods=1).skew()
+        df['rolling_skew_20'] = df['returns_1'].rolling(window=20, min_periods=1).skew()
+        df['rolling_kurtosis_10'] = df['returns_1'].rolling(window=10, min_periods=1).kurt()
+        df['rolling_kurtosis_20'] = df['returns_1'].rolling(window=20, min_periods=1).kurt()
 
         return df
 
@@ -106,7 +148,7 @@ class FeatureEngineer:
         df['hour'] = df.index.hour
         df['day_of_week'] = df.index.dayofweek
         df['day_of_month'] = df.index.day
-        df['week_of_year'] = df.index.isocalendar().week
+        df['week_of_year'] = df.index.isocalendar().week.astype(int)
 
         # Циклические кодирования для времени
         df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
@@ -134,8 +176,8 @@ class FeatureEngineer:
     def _calculate_rsi(self, prices: pd.Series, window: int = 14) -> pd.Series:
         """Расчет RSI (Relative Strength Index)"""
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=window, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=window, min_periods=1).mean()
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         return rsi
@@ -147,44 +189,9 @@ class FeatureEngineer:
         low_close = np.abs(df['low'] - df['close'].shift())
 
         true_range = np.maximum(high_low, np.maximum(high_close, low_close))
-        atr = true_range.rolling(window=window).mean()
+        atr = true_range.rolling(window=window, min_periods=1).mean()
         return atr
 
     def get_feature_names(self) -> List[str]:
         """Получение списка имен признаков"""
-        if not self.feature_names:
-            # Базовые ценовые признаки
-            base_features = ['open', 'high', 'low', 'close', 'tick_volume']
-
-            # Технические индикаторы
-            technical_features = [
-                'sma_10', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
-                'macd', 'macd_signal', 'macd_hist', 'rsi',
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'atr',
-                'volume_sma', 'volume_ratio'
-            ]
-
-            # Статистические признаки
-            statistical_features = [
-                'volatility_5', 'volatility_10', 'volatility_20',
-                'returns_1', 'returns_5', 'returns_10',
-                'rolling_skew_10', 'rolling_skew_20',
-                'rolling_kurtosis_10', 'rolling_kurtosis_20'
-            ]
-
-            # Временные признаки
-            time_features = [
-                'hour_sin', 'hour_cos', 'day_sin', 'day_cos'
-            ]
-
-            # Лаггированные признаки
-            lagged_features = [
-                'close_lag_1', 'close_lag_2', 'close_lag_3', 'close_lag_5',
-                'volume_lag_1', 'volume_lag_2', 'volume_lag_3', 'volume_lag_5',
-                'returns_lag_1', 'returns_lag_2', 'returns_lag_3'
-            ]
-
-            self.feature_names = (base_features + technical_features +
-                                  statistical_features + time_features + lagged_features)
-
         return self.feature_names
