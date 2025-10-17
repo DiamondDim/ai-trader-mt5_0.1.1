@@ -29,7 +29,7 @@ class Trader:
         try:
             data = load_data(
                 symbol=self.symbol,
-                timeframe_str=self.config['data']['timeframe'],  # ИСПРАВЛЕНО: используем timeframe_str
+                timeframe_str=self.config['data']['timeframe'],
                 bars_count=100  # Для торговли нужно меньше данных
             )
 
@@ -48,8 +48,8 @@ class Trader:
         Создание предсказания на основе текущих данных
         """
         try:
-            # Создаем признаки
-            features_df = create_features(data)
+            # Создаем признаки ДЛЯ ПРЕДСКАЗАНИЯ (без целевой переменной)
+            features_df = create_features(data, for_training=False)
 
             if features_df.empty:
                 print("❌ Не удалось создать признаки для предсказания")
@@ -60,15 +60,32 @@ class Trader:
                 print("❌ Нет данных для предсказания после создания признаков")
                 return None
 
-            # Берем последнюю строку для предсказания (исключая целевые колонки)
-            exclude_cols = ['target', 'future_close']
+            # Берем последнюю строку для предсказания (исключая целевую колонку)
+            exclude_cols = ['target']
             feature_cols = [col for col in features_df.columns if col not in exclude_cols]
             latest_features = features_df[feature_cols].iloc[-1:]
 
             # Проверяем на NaN
             if latest_features.isnull().any().any():
                 print("❌ NaN значения в признаках для предсказания")
+                print(f"🔍 Проблемные колонки: {latest_features.columns[latest_features.isnull().any()].tolist()}")
                 return None
+
+            # Проверяем, что все признаки совпадают с теми, на которых обучалась модель
+            model_features = self.model.feature_names_in_
+            current_features = latest_features.columns
+
+            missing_features = set(model_features) - set(current_features)
+            extra_features = set(current_features) - set(model_features)
+
+            if missing_features:
+                print(f"❌ Отсутствуют признаки, которые были при обучении: {missing_features}")
+                return None
+
+            if extra_features:
+                print(f"⚠️ Лишние признаки, которых не было при обучении: {extra_features}")
+                # Удаляем лишние признаки
+                latest_features = latest_features[model_features]
 
             # Делаем предсказание
             prediction = self.model.predict(latest_features)[0]

@@ -7,9 +7,14 @@ class FeatureEngineer:
     def __init__(self):
         self.feature_count = 0
 
-    def create_features(self, data: pd.DataFrame) -> pd.DataFrame:
+    def create_features(self, data: pd.DataFrame, for_training: bool = True) -> pd.DataFrame:
         """
         Создание признаков для ML модели
+
+        Args:
+            data: Исходные данные цен
+            for_training: Если True, создает целевую переменную для обучения
+                         Если False, создает только признаки для предсказания
         """
         try:
             if data.empty:
@@ -77,26 +82,38 @@ class FeatureEngineer:
                 df['day_of_week'] = df.index.dayofweek
                 df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
 
-            # Целевая переменная (направление цены через n баров)
-            n_bars = 3
-            df['future_close'] = df['close'].shift(-n_bars)
-            df['target'] = (df['future_close'] > df['close']).astype(int)
+            # Целевая переменная (только для обучения)
+            if for_training:
+                n_bars = 3
+                df['future_close'] = df['close'].shift(-n_bars)
+                df['target'] = (df['future_close'] > df['close']).astype(int)
+            else:
+                # Для предсказания не создаем целевую переменную
+                df['target'] = 0  # Заглушка
 
             # Удаляем NaN значения
             df = df.dropna()
 
+            # Определяем колонки для исключения
+            exclude_cols = ['target']
+            if for_training:
+                exclude_cols.append('future_close')  # Исключаем future_close только при обучении
+
             # Считаем количество признаков (исключая целевые и временные колонки)
-            exclude_cols = ['target', 'future_close', 'hour', 'day_of_week', 'is_weekend']
-            feature_cols = [col for col in df.columns if col not in exclude_cols]
+            feature_exclude_cols = exclude_cols + ['hour', 'day_of_week', 'is_weekend']
+            feature_cols = [col for col in df.columns if col not in feature_exclude_cols]
             self.feature_count = len(feature_cols)
 
-            print(f"✅ Создано признаков: {self.feature_count}")
+            print(
+                f"✅ Создано признаков: {self.feature_count} (режим: {'обучение' if for_training else 'предсказание'})")
             print(f"✅ Образцов после очистки: {len(df)}")
 
             return df
 
         except Exception as e:
             print(f"❌ Ошибка создания признаков: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
 
     def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
@@ -135,12 +152,12 @@ class FeatureEngineer:
 
 
 # Функция-обертка для обратной совместимости
-def create_features(data: pd.DataFrame) -> pd.DataFrame:
+def create_features(data: pd.DataFrame, for_training: bool = True) -> pd.DataFrame:
     """
     Функция-обертка для создания признаков
     """
     engineer = FeatureEngineer()
-    return engineer.create_features(data)
+    return engineer.create_features(data, for_training)
 
 
 def get_feature_count() -> int:

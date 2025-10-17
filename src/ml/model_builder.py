@@ -33,7 +33,7 @@ def train_model(symbol=None):
         # Загрузка данных для конкретного символа
         data = load_data(
             symbol=trading_symbol,
-            timeframe_str=config['data']['timeframe'],  # ИСПРАВЛЕНО: timeframe -> timeframe_str
+            timeframe_str=config['data']['timeframe'],
             bars_count=config['data']['bars_count']
         )
 
@@ -43,16 +43,18 @@ def train_model(symbol=None):
 
         print(f"✅ Загружено {len(data)} баров")
 
-        # Создание признаков
-        print("🔧 Создание признаков...")
-        features_df = create_features(data)
+        # Создание признаков ДЛЯ ОБУЧЕНИЯ (с целевой переменной)
+        print("🔧 Создание признаков для обучения...")
+        features_df = create_features(data, for_training=True)
 
         if features_df.empty or features_df.isnull().all().all():
             print("❌ Не удалось создать признаки или все признаки NaN")
             return False
 
         # Подготовка данных для обучения
-        X = features_df.drop('target', axis=1)
+        # ИСКЛЮЧАЕМ future_close из признаков!
+        exclude_cols = ['target', 'future_close']
+        X = features_df.drop(exclude_cols, axis=1)
         y = features_df['target']
 
         # Удаляем строки с NaN
@@ -66,6 +68,7 @@ def train_model(symbol=None):
 
         print(f"✅ Валидных образцов для обучения: {len(X)}")
         print(f"✅ Количество признаков: {X.shape[1]}")
+        print(f"✅ Признаки: {list(X.columns)}")
 
         # Разделение на тренировочную и тестовую выборки
         X_train, X_test, y_train, y_test = train_test_split(
