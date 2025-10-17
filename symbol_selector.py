@@ -10,11 +10,17 @@ import questionary
 from datetime import datetime
 
 # Добавляем путь к корневой директории проекта
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
-from src.core.mt5_client import get_available_symbols, get_all_symbols, initialize_mt5
-from src.ml.model_builder import train_model
-from src.utils.config import load_config, save_config
+try:
+    from src.core.mt5_client import get_available_symbols, get_all_symbols, initialize_mt5
+    from src.ml.model_builder import train_model
+    from src.utils.config import load_config, save_config
+except ImportError as e:
+    print(f"❌ Ошибка импорта: {e}")
+    print("💡 Проверьте структуру папок и наличие необходимых файлов")
+    sys.exit(1)
 
 
 class SymbolSelector:
@@ -207,6 +213,8 @@ class SymbolSelector:
 
         except Exception as e:
             print(f"\n💥 Критическая ошибка при обучении: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def run_selection_flow(self, auto_train=True):

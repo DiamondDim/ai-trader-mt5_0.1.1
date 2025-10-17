@@ -1,197 +1,150 @@
 import pandas as pd
 import numpy as np
-from typing import List
-import warnings
-
-warnings.filterwarnings('ignore')
+from typing import Optional
 
 
 class FeatureEngineer:
-    """Класс для создания и подготовки признаков"""
+    def __init__(self):
+        self.feature_count = 0
 
-    def __init__(self, config: dict):
-        self.config = config
-        self.feature_names = []
-        self._initialize_feature_names()
-
-    def _initialize_feature_names(self):
-        """Инициализация списка имен признаков"""
-        # Базовые ценовые признаки
-        base_features = ['open', 'high', 'low', 'close', 'tick_volume']
-
-        # Технические индикаторы
-        technical_features = [
-            'sma_10', 'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'macd', 'macd_signal', 'macd_hist', 'rsi',
-            'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'atr',
-            'volume_sma', 'volume_ratio'
-        ]
-
-        # Статистические признаки
-        statistical_features = [
-            'volatility_5', 'volatility_10', 'volatility_20',
-            'returns_1', 'returns_5', 'returns_10',
-            'rolling_skew_10', 'rolling_skew_20',
-            'rolling_kurtosis_10', 'rolling_kurtosis_20'
-        ]
-
-        # Временные признаки
-        time_features = [
-            'hour_sin', 'hour_cos', 'day_sin', 'day_cos'
-        ]
-
-        # Лаггированные признаки
-        lagged_features = [
-            'close_lag_1', 'close_lag_2', 'close_lag_3', 'close_lag_5',
-            'volume_lag_1', 'volume_lag_2', 'volume_lag_3', 'volume_lag_5',
-            'returns_lag_1', 'returns_lag_2', 'returns_lag_3'
-        ]
-
-        self.feature_names = (base_features + technical_features +
-                              statistical_features + time_features + lagged_features)
-
-    def prepare_features(self, data: pd.DataFrame, symbol: str) -> pd.DataFrame:
-        """Подготовка признаков из рыночных данных"""
-        print("Начало подготовки фич...")
-
+    def create_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Создание признаков для ML модели
+        """
         try:
+            if data.empty:
+                return pd.DataFrame()
+
             df = data.copy()
 
-            # Создание расширенного набора фич
-            df = self._create_basic_technical_indicators(df)
-            df = self._create_statistical_features(df)
-            df = self._create_time_features(df)
-            df = self._create_lagged_features(df)
+            # Базовые ценовые фичи
+            df['returns'] = df['close'].pct_change()
+            df['high_low_ratio'] = df['high'] / df['low']
+            df['open_close_ratio'] = df['close'] / df['open']
 
-            # Удаляем строки с NaN значениями
-            initial_count = len(df)
+            # Простые скользящие средние
+            for window in [5, 10, 20, 50]:
+                df[f'sma_{window}'] = df['close'].rolling(window=window).mean()
+                df[f'sma_ratio_{window}'] = df['close'] / df[f'sma_{window}']
+                df[f'returns_sma_{window}'] = df['returns'].rolling(window=window).mean()
+
+            # Экспоненциальные скользящие средние
+            for span in [8, 13, 21]:
+                df[f'ema_{span}'] = df['close'].ewm(span=span).mean()
+                df[f'ema_ratio_{span}'] = df['close'] / df[f'ema_{span}']
+
+            # RSI (Relative Strength Index)
+            df['rsi_14'] = self.calculate_rsi(df['close'], 14)
+            df['rsi_21'] = self.calculate_rsi(df['close'], 21)
+
+            # MACD
+            macd, signal = self.calculate_macd(df['close'])
+            df['macd'] = macd
+            df['macd_signal'] = signal
+            df['macd_histogram'] = macd - signal
+
+            # Bollinger Bands
+            bb_upper, bb_lower, bb_middle = self.calculate_bollinger_bands(df['close'])
+            df['bb_upper'] = bb_upper
+            df['bb_lower'] = bb_lower
+            df['bb_middle'] = bb_middle
+            df['bb_position'] = (df['close'] - bb_lower) / (bb_upper - bb_lower)
+
+            # Волатильность
+            for window in [5, 10, 20]:
+                df[f'volatility_{window}'] = df['returns'].rolling(window=window).std()
+                df[f'atr_{window}'] = self.calculate_atr(df, window)
+
+            # Объемы
+            if 'tick_volume' in df.columns:
+                df['volume_sma_5'] = df['tick_volume'].rolling(5).mean()
+                df['volume_sma_20'] = df['tick_volume'].rolling(20).mean()
+                df['volume_ratio'] = df['tick_volume'] / df['volume_sma_20']
+
+            # Ценовые уровни
+            df['resistance'] = df['high'].rolling(20).max()
+            df['support'] = df['low'].rolling(20).min()
+            df['distance_to_resistance'] = (df['resistance'] - df['close']) / df['close']
+            df['distance_to_support'] = (df['close'] - df['support']) / df['close']
+
+            # Статистические фичи
+            df['rolling_skew_10'] = df['returns'].rolling(10).skew()
+            df['rolling_kurt_10'] = df['returns'].rolling(10).kurt()
+
+            # Временные фичи
+            if hasattr(df.index, 'hour'):
+                df['hour'] = df.index.hour
+                df['day_of_week'] = df.index.dayofweek
+                df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+
+            # Целевая переменная (направление цены через n баров)
+            n_bars = 3
+            df['future_close'] = df['close'].shift(-n_bars)
+            df['target'] = (df['future_close'] > df['close']).astype(int)
+
+            # Удаляем NaN значения
             df = df.dropna()
-            final_count = len(df)
 
-            print(f"✅ Подготовка фич завершена. Создано {len(self.feature_names)} признаков")
-            print(f"📊 Данные: было {initial_count}, стало {final_count} строк после очистки")
+            # Считаем количество признаков (исключая целевые и временные колонки)
+            exclude_cols = ['target', 'future_close', 'hour', 'day_of_week', 'is_weekend']
+            feature_cols = [col for col in df.columns if col not in exclude_cols]
+            self.feature_count = len(feature_cols)
+
+            print(f"✅ Создано признаков: {self.feature_count}")
+            print(f"✅ Образцов после очистки: {len(df)}")
+
             return df
 
         except Exception as e:
-            print(f"❌ Ошибка подготовки фич: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Ошибка создания признаков: {e}")
             return pd.DataFrame()
 
-    def _create_basic_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Создание базовых технических индикаторов"""
-        print("Добавление базовых технических индикаторов...")
-
-        # Простые скользящие средние
-        df['sma_10'] = df['close'].rolling(window=10, min_periods=1).mean()
-        df['sma_20'] = df['close'].rolling(window=20, min_periods=1).mean()
-        df['sma_50'] = df['close'].rolling(window=50, min_periods=1).mean()
-
-        # Экспоненциальные скользящие средние
-        df['ema_12'] = df['close'].ewm(span=12, min_periods=1).mean()
-        df['ema_26'] = df['close'].ewm(span=26, min_periods=1).mean()
-
-        # MACD
-        df['macd'] = df['ema_12'] - df['ema_26']
-        df['macd_signal'] = df['macd'].ewm(span=9, min_periods=1).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
-
-        # RSI
-        df['rsi'] = self._calculate_rsi(df['close'], window=14)
-
-        # Bollinger Bands
-        df['bb_middle'] = df['close'].rolling(window=20, min_periods=1).mean()
-        bb_std = df['close'].rolling(window=20, min_periods=1).std()
-        df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
-        df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-
-        # ATR (Average True Range)
-        df['atr'] = self._calculate_atr(df, window=14)
-
-        # Volume-based features
-        df['volume_sma'] = df['tick_volume'].rolling(window=20, min_periods=1).mean()
-        df['volume_ratio'] = df['tick_volume'] / df['volume_sma'].replace(0, 1)  # Защита от деления на 0
-
-        return df
-
-    def _create_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Создание статистических признаков"""
-        print("Добавление статистических фич...")
-
-        # Волатильность
-        df['volatility_5'] = df['close'].pct_change().rolling(window=5, min_periods=1).std()
-        df['volatility_10'] = df['close'].pct_change().rolling(window=10, min_periods=1).std()
-        df['volatility_20'] = df['close'].pct_change().rolling(window=20, min_periods=1).std()
-
-        # Процентные изменения
-        df['returns_1'] = df['close'].pct_change(1)
-        df['returns_5'] = df['close'].pct_change(5)
-        df['returns_10'] = df['close'].pct_change(10)
-
-        # Статистические моменты
-        df['rolling_skew_10'] = df['returns_1'].rolling(window=10, min_periods=1).skew()
-        df['rolling_skew_20'] = df['returns_1'].rolling(window=20, min_periods=1).skew()
-        df['rolling_kurtosis_10'] = df['returns_1'].rolling(window=10, min_periods=1).kurt()
-        df['rolling_kurtosis_20'] = df['returns_1'].rolling(window=20, min_periods=1).kurt()
-
-        return df
-
-    def _create_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Создание временных признаков"""
-        print("Добавление временных фич...")
-
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-
-        # Временные признаки
-        df['hour'] = df.index.hour
-        df['day_of_week'] = df.index.dayofweek
-        df['day_of_month'] = df.index.day
-        df['week_of_year'] = df.index.isocalendar().week.astype(int)
-
-        # Циклические кодирования для времени
-        df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
-        df['day_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
-        df['day_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
-
-        return df
-
-    def _create_lagged_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Создание лаггированных признаков"""
-        print("Добавление лаггированных фич...")
-
-        # Лаги цен
-        for lag in [1, 2, 3, 5]:
-            df[f'close_lag_{lag}'] = df['close'].shift(lag)
-            df[f'volume_lag_{lag}'] = df['tick_volume'].shift(lag)
-
-        # Лаги доходностей
-        for lag in [1, 2, 3]:
-            df[f'returns_lag_{lag}'] = df['returns_1'].shift(lag)
-
-        return df
-
-    def _calculate_rsi(self, prices: pd.Series, window: int = 14) -> pd.Series:
-        """Расчет RSI (Relative Strength Index)"""
+    def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        """Расчет RSI"""
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window, min_periods=1).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         return rsi
 
-    def _calculate_atr(self, df: pd.DataFrame, window: int = 14) -> pd.Series:
-        """Расчет ATR (Average True Range)"""
+    def calculate_macd(self, prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple:
+        """Расчет MACD"""
+        ema_fast = prices.ewm(span=fast).mean()
+        ema_slow = prices.ewm(span=slow).mean()
+        macd = ema_fast - ema_slow
+        macd_signal = macd.ewm(span=signal).mean()
+        return macd, macd_signal
+
+    def calculate_bollinger_bands(self, prices: pd.Series, window: int = 20, num_std: int = 2) -> tuple:
+        """Расчет Bollinger Bands"""
+        rolling_mean = prices.rolling(window=window).mean()
+        rolling_std = prices.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return upper_band, lower_band, rolling_mean
+
+    def calculate_atr(self, df: pd.DataFrame, window: int = 14) -> pd.Series:
+        """Расчет Average True Range"""
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
-
-        true_range = np.maximum(high_low, np.maximum(high_close, low_close))
-        atr = true_range.rolling(window=window, min_periods=1).mean()
+        true_range = np.maximum(np.maximum(high_low, high_close), low_close)
+        atr = true_range.rolling(window=window).mean()
         return atr
 
-    def get_feature_names(self) -> List[str]:
-        """Получение списка имен признаков"""
-        return self.feature_names
+
+# Функция-обертка для обратной совместимости
+def create_features(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Функция-обертка для создания признаков
+    """
+    engineer = FeatureEngineer()
+    return engineer.create_features(data)
+
+
+def get_feature_count() -> int:
+    """
+    Получение количества созданных признаков
+    """
+    return FeatureEngineer().feature_count

@@ -11,13 +11,20 @@ import time
 from datetime import datetime
 
 # Добавляем путь к src
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.join(current_dir, 'src')
+sys.path.append(src_path)
 
-from utils.config import load_config
-from core.trader import Trader
-from core.mt5_client import initialize_mt5, close_all_orders, get_symbol_info
-from ml.model_builder import train_model, load_model_for_symbol, get_available_models
-from symbol_selector import SymbolSelector
+try:
+    from utils.config import load_config
+    from core.trader import Trader
+    from core.mt5_client import initialize_mt5, close_all_orders, get_symbol_info
+    from ml.model_builder import train_model, load_model_for_symbol, get_available_models
+    from symbol_selector import SymbolSelector
+except ImportError as e:
+    print(f"❌ Ошибка импорта: {e}")
+    print("💡 Проверьте структуру папок и наличие необходимых файлов")
+    sys.exit(1)
 
 
 def test_connection():
@@ -34,7 +41,8 @@ def test_connection():
 
     print(f"✅ Подключение к MT5 успешно")
     print(f"📊 Доступно основных пар: {len(symbols)}")
-    print("📈 Примеры доступных пар:", symbols[:5])
+    if symbols:
+        print("📈 Примеры доступных пар:", symbols[:5])
 
     return True
 
@@ -104,6 +112,8 @@ def trade_mode(symbol=None):
         return True
     except Exception as e:
         print(f"❌ Ошибка в торговом режиме: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -168,8 +178,14 @@ def status_mode():
 
 def select_symbol_mode(auto_train=True):
     """Режим выбора символа"""
-    selector = SymbolSelector()
-    return selector.run_selection_flow(auto_train=auto_train)
+    try:
+        selector = SymbolSelector()
+        return selector.run_selection_flow(auto_train=auto_train)
+    except Exception as e:
+        print(f"❌ Ошибка в режиме выбора символа: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def stop_mode(symbol=None):
