@@ -1,236 +1,231 @@
-import pandas as pd
-import numpy as np
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report, f1_score
-from sklearn.preprocessing import StandardScaler
 import joblib
 import os
-from typing import Optional
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
 import warnings
 
 warnings.filterwarnings('ignore')
 
 
-class ModelBuilder:
-    """Улучшенный класс для построения и обучения ML моделей"""
+def train_model(symbol=None):
+    """
+    Обучение модели для конкретного символа
+    """
+    try:
+        from src.utils.config import load_config
+        from src.core.mt5_client import load_data
+        from src.ml.feature_engineer import create_features
 
-    def __init__(self, config: dict):
-        self.config = config
-        self.model = None
-        self.scaler = StandardScaler()
-        self.feature_importance_ = None
+        config = load_config()
 
-    def create_model(self):
-        """Создание модели на основе конфигурации"""
-        model_config = self.config.get('model', {})
-        model_type = model_config.get('model_type', 'GradientBoosting')
-
-        print(f"🤖 Создание модели: {model_type}")
-
-        if model_type == "GradientBoosting":
-            model_params = model_config.get('model_params', {})
-            self.model = GradientBoostingClassifier(
-                n_estimators=model_params.get('n_estimators', 200),  # Увеличили
-                max_depth=model_params.get('max_depth', 4),  # Увеличили
-                learning_rate=model_params.get('learning_rate', 0.05),  # Уменьшили
-                min_samples_split=model_params.get('min_samples_split', 50),  # Добавили
-                min_samples_leaf=model_params.get('min_samples_leaf', 20),  # Добавили
-                subsample=model_params.get('subsample', 0.8),  # Добавили
-                random_state=model_params.get('random_state', 42)
-            )
-        elif model_type == "RandomForest":
-            model_params = model_config.get('model_params', {})
-            self.model = RandomForestClassifier(
-                n_estimators=model_params.get('n_estimators', 200),
-                max_depth=model_params.get('max_depth', 6),
-                min_samples_split=model_params.get('min_samples_split', 20),
-                min_samples_leaf=model_params.get('min_samples_leaf', 10),
-                random_state=model_params.get('random_state', 42),
-                n_jobs=-1
-            )
+        # Используем переданный символ или из конфига
+        if symbol:
+            trading_symbol = symbol
         else:
-            # По умолчанию используем улучшенный GradientBoosting
-            self.model = GradientBoostingClassifier(
-                n_estimators=200,
-                max_depth=4,
-                learning_rate=0.05,
-                min_samples_split=50,
-                min_samples_leaf=20,
-                subsample=0.8,
-                random_state=42
-            )
+            trading_symbol = config['trading']['symbol']
 
-        return self.model
+        print(f"📊 Обучение модели для символа: {trading_symbol}")
 
-    def train_model(self, data: pd.DataFrame, symbol: str, feature_engineer) -> Optional[str]:
-        """Обучение модели на исторических данных"""
-        try:
-            # Подготовка фич
-            print("📊 Начало подготовки данных для обучения...")
-            features_df = feature_engineer.prepare_features(data, symbol)
-            feature_names = feature_engineer.get_feature_names()
+        # Загрузка данных для конкретного символа
+        data = load_data(
+            symbol=trading_symbol,
+            timeframe=config['data']['timeframe'],
+            bars_count=config['data']['bars_count']
+        )
 
-            if len(features_df) == 0:
-                print("❌ Не удалось подготовить данные для обучения")
-                return None
+        if data.empty:
+            print(f"❌ Не удалось загрузить данные для {trading_symbol}")
+            return False
 
-            # Создание целевой переменной (предсказание направления цены)
-            features_df = self._create_improved_target(features_df)
+        print(f"✅ Загружено {len(data)} баров")
 
-            # Удаляем строки с NaN
-            initial_samples = len(features_df)
-            features_df = features_df.dropna()
-            final_samples = len(features_df)
+        # Создание признаков
+        print("🔧 Создание признаков...")
+        features_df = create_features(data)
 
-            print(f"📈 Данные после очистки: {final_samples}/{initial_samples} samples")
+        if features_df.empty or features_df.isnull().all().all():
+            print("❌ Не удалось создать признаки или все признаки NaN")
+            return False
 
-            if len(features_df) < 200:
-                print("❌ Недостаточно данных для обучения")
-                return None
+        # Подготовка данных для обучения
+        X = features_df.drop('target', axis=1)
+        y = features_df['target']
 
-            # Разделение на признаки и целевую переменную
-            X = features_df[feature_names]
-            y = features_df['target']
+        # Удаляем строки с NaN
+        valid_indices = ~(X.isnull().any(axis=1) | y.isnull())
+        X = X[valid_indices]
+        y = y[valid_indices]
 
-            print(f"✅ Данные для обучения: {len(X)} samples, {len(feature_names)} признаков")
+        if len(X) == 0:
+            print("❌ Нет валидных данных для обучения после очистки NaN")
+            return False
 
-            # Масштабирование признаков
-            print("🔧 Масштабирование признаков...")
-            X_scaled = self.scaler.fit_transform(X)
-            X = pd.DataFrame(X_scaled, columns=feature_names, index=X.index)
+        print(f"✅ Валидных образцов для обучения: {len(X)}")
+        print(f"✅ Количество признаков: {X.shape[1]}")
 
-            # Разделение на train/test
-            test_size = self.config.get('ml', {}).get('test_size', 0.2)  # Уменьшили test_size
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=42, shuffle=False
-            )
+        # Разделение на тренировочную и тестовую выборки
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, shuffle=False
+        )
 
-            print(f"📊 Разделение данных: train={len(X_train)}, test={len(X_test)}")
+        # Обучение модели
+        print("🎯 Обучение GradientBoosting модели...")
+        model = GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=3,
+            random_state=42
+        )
 
-            # Балансировка классов
-            class_ratio = y_train.mean()
-            print(f"📊 Баланс классов: {class_ratio:.3f} (1) / {1 - class_ratio:.3f} (0)")
+        model.fit(X_train, y_train)
 
-            # Создание и обучение модели
-            model = self.create_model()
+        # Оценка модели
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
 
-            print("🎯 Начало обучения модели...")
-            model.fit(X_train, y_train)
+        print(f"📈 Точность модели: {accuracy:.4f} ({accuracy * 100:.2f}%)")
+        print("\n📊 Отчет по классификации:")
+        print(classification_report(y_test, y_pred))
 
-            # Кросс-валидация
-            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy')
-            print(f"✅ Обучение завершено. CV Accuracy: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
+        # Важность признаков
+        feature_importance = pd.DataFrame({
+            'feature': X.columns,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
 
-            # Оценка на тестовых данных
-            y_pred = model.predict(X_test)
-            y_pred_proba = model.predict_proba(X_test)
-            test_accuracy = accuracy_score(y_test, y_pred)
-            test_f1 = f1_score(y_test, y_pred, average='weighted')
+        print("\n🔝 Топ-10 важных признаков:")
+        print(feature_importance.head(10).to_string(index=False))
 
-            print(f"🧪 Тестовая точность: {test_accuracy:.4f}")
-            print(f"🎯 Test F1-Score: {test_f1:.4f}")
+        # Создаем папку models если её нет
+        os.makedirs('models', exist_ok=True)
 
-            # Анализ уверенности предсказаний
-            confidence_mean = y_pred_proba.max(axis=1).mean()
-            confidence_std = y_pred_proba.max(axis=1).std()
-            print(f"📊 Средняя уверенность: {confidence_mean:.4f} ± {confidence_std:.4f}")
+        # Сохранение модели с именем включающим символ и дату
+        model_filename = f"model_{trading_symbol}_{datetime.now().strftime('%Y%m%d_%H%M')}.pkl"
+        model_path = os.path.join('models', model_filename)
 
-            # Сохранение важности признаков
-            if hasattr(model, 'feature_importances_'):
-                self.feature_importance_ = pd.DataFrame({
-                    'feature': feature_names,
-                    'importance': model.feature_importances_
-                }).sort_values('importance', ascending=False)
+        joblib.dump(model, model_path)
 
-                print("\n🏆 Топ-15 важных признаков:")
-                for i, row in self.feature_importance_.head(15).iterrows():
-                    print(f"   {row['feature']}: {row['importance']:.4f}")
+        # Сохраняем информацию о последней модели в конфиг
+        config['model']['last_trained'] = datetime.now().isoformat()
+        config['model']['current_model'] = model_path
+        config['model']['symbol'] = trading_symbol
+        config['model']['accuracy'] = float(accuracy)
+        config['model']['features_count'] = int(X.shape[1])
+        config['model']['training_samples'] = int(len(X))
 
-            # Сохранение модели и scaler
-            model_path = self.config.get('ml', {}).get('model_path', 'models/trained_model.pkl')
-            scaler_path = model_path.replace('.pkl', '_scaler.pkl')
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        from src.utils.config import save_config
+        save_config(config)
 
-            joblib.dump(model, model_path)
-            joblib.dump(self.scaler, scaler_path)
-            print(f"💾 Модель сохранена в: {model_path}")
-            print(f"💾 Scaler сохранен в: {scaler_path}")
+        print(f"✅ Модель сохранена: {model_path}")
+        print(f"💾 Размер модели: {os.path.getsize(model_path) / 1024 / 1024:.2f} MB")
 
-            self.model = model
-            return model_path
+        return True
 
-        except Exception as e:
-            print(f"❌ Ошибка обучения модели: {e}")
-            import traceback
-            traceback.print_exc()
+    except Exception as e:
+        print(f"❌ Ошибка при обучении модели: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def load_model_for_symbol(symbol):
+    """
+    Загрузка модели для конкретного символа
+    """
+    try:
+        models_dir = 'models'
+
+        if not os.path.exists(models_dir):
+            print(f"❌ Папка {models_dir} не существует")
             return None
 
-    def _create_improved_target(self, df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame:
-        """Создание улучшенной целевой переменной"""
-        # Уменьшаем горизонт предсказания для большей стабильности
-        df['future_price'] = df['close'].shift(-horizon)
-        df['price_change'] = (df['future_price'] - df['close']) / df['close']
+        # Ищем модели для символа
+        model_files = [f for f in os.listdir(models_dir)
+                       if f.startswith(f'model_{symbol.upper()}') and f.endswith('.pkl')]
 
-        # Используем порог для фильтрации слабых движений
-        threshold = 0.0005  # 0.05% порог
-        df['target'] = 1  # По умолчанию покупать
-
-        # Продавать если падение больше порога
-        df.loc[df['price_change'] < -threshold, 'target'] = 0
-        # Держать если движение в пределах порога
-        df.loc[(df['price_change'] >= -threshold) & (df['price_change'] <= threshold), 'target'] = 2
-
-        # Удаляем последние horizon строк (у них нет future_price)
-        df = df[:-horizon]
-
-        # Фильтруем только сильные сигналы (убираем target=2)
-        df = df[df['target'] != 2]
-
-        print(f"🎯 Распределение целевой переменной:")
-        target_counts = df['target'].value_counts()
-        for target_val, count in target_counts.items():
-            direction = "BUY" if target_val == 1 else "SELL"
-            percentage = count / len(df) * 100
-            print(f"   {direction} ({target_val}): {count} samples ({percentage:.1f}%)")
-
-        return df
-
-    def load_model(self):
-        """Загрузка обученной модели и scaler"""
-        try:
-            model_path = self.config.get('ml', {}).get('model_path', 'models/trained_model.pkl')
-            scaler_path = model_path.replace('.pkl', '_scaler.pkl')
-
-            if not os.path.exists(model_path):
-                print(f"❌ Файл модели не найден: {model_path}")
-                return None
-
-            self.model = joblib.load(model_path)
-
-            if os.path.exists(scaler_path):
-                self.scaler = joblib.load(scaler_path)
-                print(f"✅ Scaler загружен: {scaler_path}")
-
-            print(f"✅ Модель загружена: {model_path}")
-            return self.model
-
-        except Exception as e:
-            print(f"❌ Ошибка загрузки модели: {e}")
+        if not model_files:
+            print(f"❌ Не найдена модель для символа {symbol}")
+            print(f"💡 Доступные модели: {[f for f in os.listdir(models_dir) if f.endswith('.pkl')]}")
             return None
 
-    def predict(self, features):
-        """Предсказание на новых данных"""
-        if self.model is None:
-            print("❌ Модель не загружена")
-            return None
+        # Берем самую свежую модель (последнюю по времени)
+        latest_model = sorted(model_files, reverse=True)[0]
+        model_path = os.path.join(models_dir, latest_model)
 
-        try:
-            # Масштабирование признаков
-            features_scaled = self.scaler.transform(features)
-            prediction = self.model.predict(features_scaled)
-            probabilities = self.model.predict_proba(features_scaled)
-            return prediction, probabilities
-        except Exception as e:
-            print(f"❌ Ошибка предсказания: {e}")
-            return None
+        model = joblib.load(model_path)
+
+        # Получаем информацию о модели
+        from src.utils.config import load_config
+        config = load_config()
+
+        model_info = {
+            'path': model_path,
+            'symbol': symbol,
+            'accuracy': config['model'].get('accuracy', 'N/A'),
+            'features': config['model'].get('features_count', 'N/A'),
+            'trained': config['model'].get('last_trained', 'N/A')
+        }
+
+        print(f"✅ Загружена модель: {latest_model}")
+        print(f"   📊 Точность: {model_info['accuracy']}")
+        print(f"   🔧 Признаков: {model_info['features']}")
+        print(f"   ⏰ Обучена: {model_info['trained'][:16]}")
+
+        return model
+
+    except Exception as e:
+        print(f"❌ Ошибка загрузки модели для {symbol}: {e}")
+        return None
+
+
+def get_available_models():
+    """
+    Получает список всех доступных моделей
+    """
+    try:
+        models_dir = 'models'
+        if not os.path.exists(models_dir):
+            return []
+
+        model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')]
+
+        models_info = []
+        for model_file in model_files:
+            # Парсим информацию из имени файла
+            parts = model_file.replace('.pkl', '').split('_')
+            if len(parts) >= 3:
+                symbol = parts[1]
+                date_str = parts[2]
+                models_info.append({
+                    'symbol': symbol,
+                    'file': model_file,
+                    'date': date_str,
+                    'path': os.path.join(models_dir, model_file)
+                })
+
+        return sorted(models_info, key=lambda x: x['date'], reverse=True)
+
+    except Exception as e:
+        print(f"❌ Ошибка получения списка моделей: {e}")
+        return []
+
+
+def delete_model(model_path):
+    """
+    Удаление модели
+    """
+    try:
+        if os.path.exists(model_path):
+            os.remove(model_path)
+            print(f"✅ Модель удалена: {model_path}")
+            return True
+        else:
+            print(f"❌ Файл модели не найден: {model_path}")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка удаления модели: {e}")
+        return False

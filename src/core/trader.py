@@ -1,193 +1,159 @@
-import pandas as pd
-import numpy as np
 import time
+import pandas as pd
 from datetime import datetime
-from typing import Dict, Optional
-import MetaTrader5 as mt5
+from src.core.mt5_client import load_data, get_current_price, place_order
+from src.ml.feature_engineer import create_features
+from src.utils.config import get_symbol_specific_config
 
 
 class Trader:
-    """Класс для управления торговыми операциями с исправлениями"""
-
-    def __init__(self, config: Dict, mt5_client, risk_manager):
+    def __init__(self, config):
         self.config = config
-        self.mt5_client = mt5_client
-        self.risk_manager = risk_manager
-        self.is_trading = False
-        self.current_symbol = None
-        self.stop_requested = False
+        self.symbol = config['trading']['symbol']
+        self.symbol_config = get_symbol_specific_config(self.symbol, config)
 
-    def start_trading(self, symbol: str, model, feature_engineer) -> bool:
-        """Запуск автоматической торговли с улучшенной обработкой ошибок"""
-        print(f"🎯 Запуск торговли для {symbol}")
+        # Загрузка модели для конкретного символа
+        from src.ml.model_builder import load_model_for_symbol
+        self.model = load_model_for_symbol(self.symbol)
 
-        self.current_symbol = symbol
-        self.is_trading = True
-        self.stop_requested = False
+        if not self.model:
+            raise Exception(f"Модель для символа {self.symbol} не найдена")
 
-        # Счетчик попыток для избежания бесконечных ошибок
-        error_count = 0
-        max_errors = 5
+        print(f"✅ Трейдер инициализирован для {self.symbol}")
+        print(f"⚙️ Настройки: Лот={self.symbol_config['lot_size']}, Макс. спред={self.symbol_config['max_spread']}")
 
+    def make_prediction(self, data):
+        """
+        Создание предсказания на основе текущих данных
+        """
         try:
-            while self.is_trading and not self.stop_requested and error_count < max_errors:
-                current_data = self.mt5_client.get_current_data(symbol, bars=50)
-                if current_data is None or current_data.empty:
-                    print("❌ Не удалось получить текущие данные")
-                    error_count += 1
-                    time.sleep(30)
-                    continue
+            # Создаем признаки
+            features_df = create_features(data)
 
-                try:
-                    features_df = feature_engineer.prepare_features(current_data, symbol)
-                    feature_names = feature_engineer.get_feature_names()
+            if features_df.empty:
+                print("❌ Не удалось создать признаки для предсказания")
+                return None
 
-                    if len(features_df) == 0:
-                        print("❌ Не удалось подготовить фичи")
-                        error_count += 1
-                        time.sleep(30)
-                        continue
+            # Берем последнюю строку для предсказания
+            latest_features = features_df.drop('target', axis=1).iloc[-1:]
 
-                    latest_features = features_df[feature_names].iloc[-1:]
+            # Проверяем на NaN
+            if latest_features.isnull().any().any():
+                print("❌ NaN значения в признаках для предсказания")
+                return None
 
-                    prediction = model.predict(latest_features)[0]
-                    probability = model.predict_proba(latest_features)[0]
+            # Делаем предсказание
+            prediction = self.model.predict(latest_features)[0]
+            confidence = self.model.predict_proba(latest_features)[0].max()
 
-                    print(f"📊 Предсказание: {prediction}, Вероятности: [{probability[0]:.3f}, {probability[1]:.3f}]")
+            print(f"🎯 Предсказание: {prediction} (уверенность: {confidence:.2f})")
 
-                    # Сбрасываем счетчик ошибок при успешном предсказании
-                    error_count = 0
-
-                    # Принимаем торговое решение только при высокой уверенности
-                    self._make_trading_decision(symbol, prediction, probability, current_data)
-
-                except Exception as e:
-                    print(f"❌ Ошибка обработки данных: {e}")
-                    error_count += 1
-
-                # Проверяем флаг остановки перед ожиданием
-                if not self.stop_requested:
-                    print("⏳ Ожидание 60 секунд...")
-                    for i in range(60):
-                        if self.stop_requested:
-                            break
-                        time.sleep(1)
-
-            if error_count >= max_errors:
-                print(f"🛑 Превышено максимальное количество ошибок ({max_errors}). Торговля остановлена.")
-            elif self.stop_requested:
-                print("🛑 Торговля остановлена по запросу пользователя.")
-
-            return True
+            return {
+                'prediction': prediction,
+                'confidence': confidence,
+                'timestamp': datetime.now()
+            }
 
         except Exception as e:
-            print(f"❌ Критическая ошибка в торговом цикле: {e}")
-            return False
+            print(f"❌ Ошибка при создании предсказания: {e}")
+            return None
 
-    def _make_trading_decision(self, symbol: str, prediction: int,
-                               probability: np.ndarray, data: pd.DataFrame):
-        """Принятие торгового решения с улучшенной логикой"""
-        # Получаем текущие цены bid и ask
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
+    def execute_trade_decision(self, prediction_result):
+        """
+        Исполнение торгового решения на основе предсказания
+        """
+        if not prediction_result:
+            return
+
+        prediction = prediction_result['prediction']
+        confidence = prediction_result['confidence']
+
+        # Минимальная уверенность для торговли
+        min_confidence = self.config['model'].get('min_confidence', 0.6)
+
+        if confidence < min_confidence:
+            print(f"⚠️ Слишком низкая уверенность: {confidence:.2f} < {min_confidence}")
+            return
+
+        # Получаем текущие цены и спред
+        bid, ask = get_current_price(self.symbol)
+        if bid is None or ask is None:
             print("❌ Не удалось получить текущие цены")
             return
 
-        current_price = tick.ask if prediction == 1 else tick.bid
+        spread = ask - bid
+        max_spread = self.symbol_config['max_spread']
 
-        if not self.risk_manager.check_risk(symbol, current_price):
-            print("⚠️ Торговля приостановлена due to risk management")
+        if spread > max_spread:
+            print(f"⚠️ Слишком высокий спред: {spread:.4f} > {max_spread}")
             return
 
-        # Повышаем порог уверенности для торговли
-        confidence_threshold = 0.7  # 70% уверенности вместо 60%
-
-        if prediction == 1 and probability[1] > confidence_threshold:
-            print(f"✅ Сигнал на ПОКУПКУ (уверенность: {probability[1]:.1%})")
-            self._open_position(symbol, mt5.ORDER_TYPE_BUY, current_price)
-        elif prediction == 0 and probability[0] > confidence_threshold:
-            print(f"✅ Сигнал на ПРОДАЖУ (уверенность: {probability[0]:.1%})")
-            self._open_position(symbol, mt5.ORDER_TYPE_SELL, current_price)
-        else:
-            print(f"🤷 Нет четкого сигнала (макс. уверенность: {max(probability):.1%})")
-
-    def _open_position(self, symbol: str, order_type: int, price: float):
-        """Открытие позиции с улучшенной обработкой ошибок"""
-        volume = self.risk_manager.calculate_position_size(symbol, price)
-
-        if volume <= 0:
-            print("⚠️ Объем позиции слишком мал")
-            return
-
-        # Безопасный расчет стоп-лосса и тейк-профита
-        stop_loss = self.risk_manager.calculate_stop_loss(symbol, order_type, price)
-        take_profit = self.risk_manager.calculate_take_profit(symbol, order_type, price)
-
-        print(f"💡 Параметры ордера:")
-        print(f"   Символ: {symbol}")
-        print(f"   Тип: {'BUY' if order_type == mt5.ORDER_TYPE_BUY else 'SELL'}")
-        print(f"   Объем: {volume}")
-        print(f"   Текущая цена: {price:.5f}")
-        print(f"   Стоп-лосс: {stop_loss:.5f}")
-        print(f"   Тейк-профит: {take_profit:.5f}")
-
-        result = self.mt5_client.place_order(
-            symbol=symbol,
-            order_type=order_type,
-            volume=volume,
-            stop_loss=stop_loss,
-            take_profit=take_profit
-        )
-
-        if result:
-            print(f"✅ Позиция открыта: {symbol}")
-        else:
-            print(f"❌ Ошибка открытия позиции: {symbol}")
-
-    def stop_trading(self):
-        """Остановка торговли"""
-        self.stop_requested = True
-        self.is_trading = False
-        print("🛑 Запрошена остановка торговли...")
-
-    def emergency_stop(self):
-        """Аварийная остановка - закрытие всех позиций и остановка торговли"""
-        print("🚨 АВАРИЙНАЯ ОСТАНОВКА АКТИВИРОВАНА!")
-        self.stop_trading()
-
-        # Закрываем все позиции
-        print("🔻 Закрытие всех открытых позиций...")
-        success = self.mt5_client.close_all_positions()
+        # Определяем тип ордера
+        if prediction == 1:  # BUY
+            print(f"📈 Сигнал BUY для {self.symbol} (уверенность: {confidence:.2f})")
+            success = place_order(
+                symbol=self.symbol,
+                order_type='buy',
+                lot_size=self.symbol_config['lot_size'],
+                stop_loss=self.symbol_config.get('stop_loss_pips', 20) * 0.0001,
+                take_profit=self.symbol_config.get('take_profit_pips', 30) * 0.0001
+            )
+        else:  # SELL
+            print(f"📉 Сигнал SELL для {self.symbol} (уверенность: {confidence:.2f})")
+            success = place_order(
+                symbol=self.symbol,
+                order_type='sell',
+                lot_size=self.symbol_config['lot_size'],
+                stop_loss=self.symbol_config.get('stop_loss_pips', 20) * 0.0001,
+                take_profit=self.symbol_config.get('take_profit_pips', 30) * 0.0001
+            )
 
         if success:
-            print("✅ Все позиции закрыты")
+            print("✅ Торговая операция выполнена")
         else:
-            print("⚠️ Не все позиции удалось закрыть")
+            print("❌ Ошибка выполнения торговой операции")
 
-        return success
+    def trade_loop(self):
+        """
+        Основной цикл торговли для выбранного символа
+        """
+        print(f"\n📈 ЗАПУСК ТОРГОВОГО ЦИКЛА ДЛЯ {self.symbol}")
+        print(f"⏰ Интервал проверки: 60 секунд")
+        print(f"🎯 Минимальная уверенность: {self.config['model'].get('min_confidence', 0.6)}")
+        print("=" * 50)
 
-    def get_trading_status(self) -> Dict:
-        """Получить статус торговли"""
-        positions = self.mt5_client.get_open_positions()
-        positions_info = []
+        iteration = 0
+        try:
+            while True:
+                iteration += 1
+                print(f"\n🔄 Итерация #{iteration} - {datetime.now().strftime('%H:%M:%S')}")
 
-        for pos in positions:
-            positions_info.append({
-                'ticket': pos.ticket,
-                'symbol': pos.symbol,
-                'type': 'BUY' if pos.type == mt5.ORDER_TYPE_BUY else 'SELL',
-                'volume': pos.volume,
-                'open_price': pos.price_open,
-                'current_price': pos.price_current,
-                'profit': pos.profit,
-                'sl': pos.sl,
-                'tp': pos.tp
-            })
+                try:
+                    # Загружаем текущие данные
+                    data = load_data(
+                        symbol=self.symbol,
+                        timeframe=self.config['data']['timeframe'],
+                        bars_count=100  # Нужно меньше данных для реальной торговли
+                    )
 
-        return {
-            'is_trading': self.is_trading,
-            'stop_requested': self.stop_requested,
-            'current_symbol': self.current_symbol,
-            'open_positions_count': len(positions),
-            'open_positions': positions_info
-        }
+                    if data.empty:
+                        print("❌ Не удалось загрузить данные")
+                        time.sleep(60)
+                        continue
+
+                    # Создаем предсказание
+                    prediction_result = self.make_prediction(data)
+
+                    if prediction_result:
+                        # Исполняем торговое решение
+                        self.execute_trade_decision(prediction_result)
+
+                    # Пауза между итерациями
+                    time.sleep(60)
+
+                except Exception as e:
+                    print(f"❌ Ошибка в итерации #{iteration}: {e}")
+                    time.sleep(10)
+
+        except KeyboardInterrupt:
+            print(f"\n⏹️ Остановка торговли для {self.symbol}")

@@ -1,314 +1,266 @@
 #!/usr/bin/env python3
 """
-AI Trading Robot for MetaTrader 5
-Главный управляющий скрипт
+AI Trading Robot v0.1.1
+Главный управляющий скрипт с поддержкой множества символов
 """
 
 import argparse
 import sys
 import os
-import signal
 import time
-from pathlib import Path
+from datetime import datetime
 
-# Добавляем корневую директорию в путь
-root_dir = Path(__file__).parent
-sys.path.append(str(root_dir))
+# Добавляем путь к src
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
-from src.core.mt5_client import MT5Client  # ИСПРАВЛЕНО: импорт из mt5_client.py
-from src.core.trader import Trader
-from src.ml.model_builder import ModelBuilder
-from src.ml.feature_engineer import FeatureEngineer
-from src.utils.risk_manager import RiskManager
-from src.utils.config import Config
-
-# Глобальные переменные для управления роботом
-trader_instance = None
-mt5_client = None
+from utils.config import load_config
+from core.trader import Trader
+from core.mt5_client import initialize_mt5, close_all_orders, get_symbol_info
+from ml.model_builder import train_model, load_model_for_symbol, get_available_models
+from symbol_selector import SymbolSelector
 
 
-def signal_handler(signum, frame):
-    """Обработчик сигналов для graceful shutdown"""
-    print(f"\n🛑 Получен сигнал {signum}. Останавливаем робота...")
-    if trader_instance:
-        trader_instance.stop_trading()
-    if mt5_client:
-        mt5_client.disconnect()
-    sys.exit(0)
+def test_connection():
+    """Тестирование подключения к MT5"""
+    print("🔍 Тестирование подключения к MT5...")
+
+    if not initialize_mt5():
+        print("❌ Подключение к MT5 не удалось")
+        return False
+
+    # Проверяем доступные символы
+    from core.mt5_client import get_available_symbols
+    symbols = get_available_symbols()
+
+    print(f"✅ Подключение к MT5 успешно")
+    print(f"📊 Доступно основных пар: {len(symbols)}")
+    print("📈 Примеры доступных пар:", symbols[:5])
+
+    return True
 
 
-def setup_signal_handlers():
-    """Настройка обработчиков сигналов"""
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # kill command
-
-
-def train_model(config, symbol):
+def train_mode(symbol=None):
     """Режим обучения модели"""
-    print("🤖 Режим обучения модели...")
+    config = load_config()
 
-    client = MT5Client(config)  # ИСПРАВЛЕНО: используем MT5Client
-    if not client.connect():
-        print("❌ Не удалось подключиться к MT5")
+    # Определяем символ для обучения
+    training_symbol = symbol or config['trading']['symbol']
+
+    print(f"🎯 Режим обучения для символа: {training_symbol}")
+
+    # Проверяем подключение
+    if not initialize_mt5():
         return False
 
-    try:
-        # Загрузка данных
-        print(f"📊 Загрузка данных для {symbol}...")
-        data_bars = config.get('ml', {}).get('data_bars', 2000)
-        data = client.get_historical_data(symbol, bars=data_bars)
-        if data is None or data.empty:
-            print("❌ Не удалось загрузить данные")
-            return False
+    # Проверяем доступность символа
+    symbol_info = get_symbol_info(training_symbol)
+    if not symbol_info:
+        print(f"❌ Символ {training_symbol} недоступен")
+        return False
 
-        # Создание и обучение модели
-        model_builder = ModelBuilder(config)
-        feature_engineer = FeatureEngineer(config)
+    print(f"✅ Символ {training_symbol} доступен для торговли")
+    print(f"   Bid: {symbol_info['bid']}, Ask: {symbol_info['ask']}, Spread: {symbol_info['spread']}")
 
-        print("🎯 Обучение модели...")
-        model_path = model_builder.train_model(data, symbol, feature_engineer)
-
-        if model_path:
-            print(f"✅ Модель обучена и сохранена: {model_path}")
-            return True
-        else:
-            print("❌ Ошибка обучения модели")
-            return False
-
-    finally:
-        client.disconnect()
+    # Запускаем обучение
+    return train_model(training_symbol)
 
 
-def trade_mode(config, symbol):
+def trade_mode(symbol=None):
     """Режим торговли"""
-    global trader_instance, mt5_client
+    config = load_config()
 
-    print("💰 Запуск торгового режима...")
+    # Определяем символ для торговли
+    trading_symbol = symbol or config['trading']['symbol']
 
-    # Подключение к MT5
-    mt5_client = MT5Client(config)  # ИСПРАВЛЕНО: используем MT5Client
-    if not mt5_client.connect():
-        print("❌ Не удалось подключиться к MT5")
+    print(f"🚀 Запуск режима торговли для символа: {trading_symbol}")
+
+    # Проверяем подключение
+    if not initialize_mt5():
         return False
 
+    # Проверяем наличие модели
+    model = load_model_for_symbol(trading_symbol)
+    if not model:
+        print(f"❌ Модель для {trading_symbol} не найдена")
+        print(f"💡 Выполните обучение: python main.py --mode train --symbol {trading_symbol}")
+        return False
+
+    # Проверяем доступность символа
+    symbol_info = get_symbol_info(trading_symbol)
+    if not symbol_info:
+        print(f"❌ Символ {trading_symbol} недоступен")
+        return False
+
+    print(f"✅ Символ {trading_symbol} доступен")
+    print(f"💰 Текущая цена: Bid={symbol_info['bid']}, Ask={symbol_info['ask']}")
+
+    # Запускаем торговлю
     try:
-        # Загрузка модели
-        model_builder = ModelBuilder(config)
-        feature_engineer = FeatureEngineer(config)
-
-        model = model_builder.load_model()
-        if model is None:
-            print("❌ Не удалось загрузить модель. Сначала обучите модель.")
-            return False
-
-        # Создание менеджера рисков и трейдера
-        risk_manager = RiskManager(config)
-        trader_instance = Trader(config, mt5_client, risk_manager)
-
-        print("🚀 Запуск автоматической торговли...")
-        print("💡 Для остановки нажмите Ctrl+C")
-
-        # Запуск торговли
-        success = trader_instance.start_trading(symbol, model, feature_engineer)
-
-        return success
-
+        trader = Trader(config)
+        trader.trade_loop()
+        return True
+    except KeyboardInterrupt:
+        print("\n⏹️ Торговля остановлена пользователем")
+        return True
     except Exception as e:
-        print(f"❌ Критическая ошибка в торговом режиме: {e}")
-        return False
-    finally:
-        if mt5_client:
-            mt5_client.disconnect()
-
-
-def status_mode(config):
-    """Режим статуса"""
-    global trader_instance, mt5_client
-
-    print("📊 Получение статуса робота...")
-
-    mt5_client = MT5Client(config)  # ИСПРАВЛЕНО: используем MT5Client
-    if not mt5_client.connect():
-        print("❌ Не удалось подключиться к MT5")
+        print(f"❌ Ошибка в торговом режиме: {e}")
         return False
 
-    try:
-        # Если трейдер запущен, получаем его статус
-        if trader_instance:
-            status = trader_instance.get_trading_status()
+
+def status_mode():
+    """Режим статуса системы"""
+    config = load_config()
+
+    print("\n" + "=" * 60)
+    print("           СТАТУС AI TRADING ROBOT")
+    print("=" * 60)
+
+    # Статус MT5
+    print("\n🔌 Подключение MT5:")
+    if initialize_mt5():
+        print("   ✅ Подключено")
+
+        # Информация о текущем символе
+        current_symbol = config['trading']['symbol']
+        symbol_info = get_symbol_info(current_symbol)
+        if symbol_info:
+            print(f"   📊 Текущий символ: {current_symbol}")
+            print(f"   💰 Цена: Bid={symbol_info['bid']}, Ask={symbol_info['ask']}")
+            print(f"   📏 Спред: {symbol_info['spread']}")
         else:
-            # Иначе базовый статус
-            positions = mt5_client.get_open_positions()
-            status = {
-                'is_trading': False,
-                'stop_requested': False,
-                'current_symbol': None,
-                'open_positions_count': len(positions),
-                'open_positions': []
-            }
-
-            for pos in positions:
-                status['open_positions'].append({
-                    'ticket': pos.ticket,
-                    'symbol': pos.symbol,
-                    'type': 'BUY' if pos.type == mt5.ORDER_TYPE_BUY else 'SELL',
-                    'volume': pos.volume,
-                    'open_price': pos.price_open,
-                    'current_price': pos.price_current,
-                    'profit': pos.profit,
-                    'sl': pos.sl,
-                    'tp': pos.tp
-                })
-
-        # Вывод статуса
-        print("\n" + "=" * 50)
-        print("🤖 СТАТУС AI TRADING ROBOT")
-        print("=" * 50)
-        print(f"📈 Торговля активна: {'✅ ДА' if status['is_trading'] else '❌ НЕТ'}")
-        print(f"🛑 Остановка запрошена: {'✅ ДА' if status['stop_requested'] else '❌ НЕТ'}")
-        print(f"🎯 Текущий символ: {status['current_symbol'] or 'Нет'}")
-        print(f"📊 Открыто позиций: {status['open_positions_count']}")
-
-        if status['open_positions']:
-            print("\n💼 ОТКРЫТЫЕ ПОЗИЦИИ:")
-            for pos in status['open_positions']:
-                profit_color = "🟢" if pos['profit'] >= 0 else "🔴"
-                print(f"   {pos['ticket']} | {pos['symbol']} | {pos['type']} | "
-                      f"Объем: {pos['volume']} | Цена: {pos['open_price']:.5f} | "
-                      f"Прибыль: {profit_color} {pos['profit']:.2f}")
-
-        print("=" * 50)
-        return True
-
-    finally:
-        mt5_client.disconnect()
-
-
-def stop_mode(config):
-    """Режим остановки"""
-    global trader_instance, mt5_client
-
-    print("🛑 Запрос остановки торговли...")
-
-    if trader_instance:
-        trader_instance.stop_trading()
-        print("✅ Команда остановки отправлена")
-        return True
+            print(f"   ❌ Символ {current_symbol} недоступен")
     else:
-        print("⚠️ Трейдер не запущен")
+        print("   ❌ Не подключено")
+
+    # Статус модели
+    print("\n🤖 ML Модель:")
+    model_info = config['model']
+    if model_info.get('current_model') and os.path.exists(model_info['current_model']):
+        print(f"   ✅ Модель: {os.path.basename(model_info['current_model'])}")
+        print(f"   🎯 Точность: {model_info.get('accuracy', 'N/A')}")
+        print(f"   🔧 Признаков: {model_info.get('features_count', 'N/A')}")
+        print(f"   📅 Обучена: {model_info.get('last_trained', 'N/A')}")
+    else:
+        print("   ❌ Модель не обучена")
+
+    # Доступные модели
+    print("\n📚 Доступные модели:")
+    models = get_available_models()
+    if models:
+        for i, model in enumerate(models[:5], 1):  # Показываем первые 5
+            print(f"   {i}. {model['symbol']} - {model['date']}")
+        if len(models) > 5:
+            print(f"   ... и еще {len(models) - 5} моделей")
+    else:
+        print("   ❌ Нет доступных моделей")
+
+    # Настройки торговли
+    print("\n⚙️ Настройки торговли:")
+    trading_config = config['trading']
+    print(f"   📈 Символ: {trading_config['symbol']}")
+    print(f"   📦 Лот: {trading_config['lot_size']}")
+    print(f"   📏 Макс. спред: {trading_config['max_spread']}")
+
+    print("\n" + "=" * 60)
+
+    return True
+
+
+def select_symbol_mode(auto_train=True):
+    """Режим выбора символа"""
+    selector = SymbolSelector()
+    return selector.run_selection_flow(auto_train=auto_train)
+
+
+def stop_mode(symbol=None):
+    """Режим остановки торговли"""
+    print("🛑 Остановка торговли...")
+
+    if not initialize_mt5():
         return False
 
+    success = close_all_orders(symbol)
 
-def emergency_stop_mode(config):
-    """Режим аварийной остановки"""
-    global trader_instance, mt5_client
+    if success:
+        print("✅ Все ордера закрыты")
+    else:
+        print("❌ Не удалось закрыть все ордера")
 
+    return success
+
+
+def emergency_stop_mode():
+    """Аварийная остановка"""
     print("🚨 АВАРИЙНАЯ ОСТАНОВКА!")
 
-    mt5_client = MT5Client(config)  # ИСПРАВЛЕНО: используем MT5Client
-    if not mt5_client.connect():
-        print("❌ Не удалось подключиться к MT5")
+    if not initialize_mt5():
         return False
 
-    try:
-        if trader_instance:
-            success = trader_instance.emergency_stop()
-            if success:
-                print("✅ Аварийная остановка выполнена")
-            else:
-                print("⚠️ Аварийная остановка выполнена с ошибками")
-            return success
-        else:
-            # Если трейдер не запущен, просто закрываем все позиции
-            print("🔻 Закрытие всех открытых позиций...")
-            success = mt5_client.close_all_positions()
-            if success:
-                print("✅ Все позиции закрыты")
-            else:
-                print("⚠️ Не все позиции удалось закрыть")
-            return success
+    # Закрываем все ордера без проверок
+    from core.mt5_client import close_all_orders
+    success = close_all_orders()
 
-    finally:
-        mt5_client.disconnect()
-
-
-def test_connection(config):
-    """Тестирование подключения"""
-    print("🧪 Тестирование подключения к MT5...")
-
-    client = MT5Client(config)  # ИСПРАВЛЕНО: используем MT5Client
-    if client.connect():
-        print("✅ Подключение успешно")
-
-        # Тестируем базовые функции
-        symbol = config.get('trading', {}).get('symbol', 'EURUSDrfd')
-        print(f"🔍 Тестирование символа {symbol}...")
-
-        symbol_info = client.get_symbol_info(symbol)
-        if symbol_info:
-            print("✅ Информация о символе:")
-            print(f"   Bid: {symbol_info['bid']:.5f}")
-            print(f"   Ask: {symbol_info['ask']:.5f}")
-            print(f"   Point: {symbol_info['point']}")
-            print(f"   Stops Level: {symbol_info['trade_stops_level']}")
-        else:
-            print("❌ Не удалось получить информацию о символе")
-
-        client.disconnect()
-        return True
+    if success:
+        print("✅ Аварийная остановка выполнена")
     else:
-        print("❌ Ошибка подключения")
-        return False
+        print("❌ Ошибка при аварийной остановке")
+
+    return success
 
 
 def main():
     """Главная функция"""
-    parser = argparse.ArgumentParser(description='AI Trading Robot for MetaTrader 5')
-    parser.add_argument('--mode', choices=['train', 'trade', 'status', 'stop', 'emergency-stop', 'test'],
-                        required=True, help='Режим работы')
-    parser.add_argument('--symbol', help='Торговый символ (например: EURUSDrfd)')
-    parser.add_argument('--config', help='Путь к файлу конфигурации')
+    parser = argparse.ArgumentParser(description='AI Trading Robot v0.1.1')
+    parser.add_argument('--mode', type=str, required=True,
+                        choices=['test', 'train', 'trade', 'status', 'stop',
+                                 'emergency-stop', 'select-symbol'],
+                        help='Режим работы')
+    parser.add_argument('--symbol', type=str, help='Торговый символ (например, EURUSD)')
+    parser.add_argument('--no-train', action='store_true',
+                        help='Пропустить автообучение при выборе символа')
 
     args = parser.parse_args()
 
-    # Загрузка конфигурации
-    if args.config:
-        config = Config.load_config(args.config)
-    else:
-        config = Config.load_config()
+    print(f"\n🤖 AI Trading Robot v0.1.1")
+    print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🎮 Режим: {args.mode}")
 
-    if config is None:
-        print("❌ Не удалось загрузить конфигурацию")
-        return
-
-    # Настройка обработчиков сигналов
-    setup_signal_handlers()
-
-    # Определение символа
-    symbol = args.symbol or config.get('trading', {}).get('symbol', 'EURUSDrfd')
-
-    # Выполнение выбранного режима
     try:
-        if args.mode == 'train':
-            train_model(config, symbol)
+        if args.mode == 'test':
+            success = test_connection()
+        elif args.mode == 'train':
+            success = train_mode(args.symbol)
         elif args.mode == 'trade':
-            trade_mode(config, symbol)
+            success = trade_mode(args.symbol)
         elif args.mode == 'status':
-            status_mode(config)
+            success = status_mode()
+        elif args.mode == 'select-symbol':
+            success = select_symbol_mode(auto_train=not args.no_train)
         elif args.mode == 'stop':
-            stop_mode(config)
+            success = stop_mode(args.symbol)
         elif args.mode == 'emergency-stop':
-            emergency_stop_mode(config)
-        elif args.mode == 'test':
-            test_connection(config)
+            success = emergency_stop_mode()
+        else:
+            print(f"❌ Неизвестный режим: {args.mode}")
+            success = False
+
+        if success:
+            print(f"\n✅ Режим '{args.mode}' завершен успешно")
+        else:
+            print(f"\n❌ Режим '{args.mode}' завершен с ошибками")
+
+        return success
 
     except KeyboardInterrupt:
-        print("\n🛑 Программа остановлена пользователем")
+        print(f"\n⏹️ Программа прервана пользователем")
+        return False
     except Exception as e:
-        print(f"❌ Непредвиденная ошибка: {e}")
+        print(f"\n💥 Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)

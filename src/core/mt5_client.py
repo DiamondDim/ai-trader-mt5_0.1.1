@@ -1,404 +1,240 @@
 import MetaTrader5 as mt5
 import pandas as pd
-import numpy as np
-from typing import List, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 
-class MT5Client:
-    """Исправленная версия MT5 клиента с решением ошибки 10030"""
+def initialize_mt5():
+    """
+    Инициализация подключения к MT5
+    """
+    if not mt5.initialize():
+        print("❌ Ошибка инициализации MT5, код ошибки:", mt5.last_error())
+        return False
 
-    def __init__(self, config: Dict):
-        self.config = config
-        self.connected = False
+    # Проверяем подключение к серверу
+    if not mt5.terminal_info():
+        print("❌ Не удалось подключиться к торговому серверу")
+        return False
 
-    def connect(self) -> bool:
-        """Подключение к MT5"""
-        mt5_config = self.config.get('mt5', {})
+    print("✅ MetaTrader5 успешно инициализирован")
+    return True
 
-        print("🔌 Попытка подключения к MT5...")
 
-        # Принудительно отключаем предыдущее подключение
-        mt5.shutdown()
+def get_available_symbols():
+    """
+    Получает список основных валютных пар из MT5
+    """
+    try:
+        symbols = mt5.symbols_get()
+        symbol_names = [s.name for s in symbols]
 
-        try:
-            if not mt5.initialize(
-                    path=mt5_config.get('path', ""),
-                    server=mt5_config.get('server', ""),
-                    login=mt5_config.get('login', 0),
-                    password=mt5_config.get('password', ""),
-                    timeout=mt5_config.get('timeout', 60000)
-            ):
-                error = mt5.last_error()
-                print(f"❌ Ошибка инициализации MT5: {error}")
-                return False
+        # Основные forex пары
+        forex_majors = [
+            'EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF',
+            'AUDUSD', 'USDCAD', 'NZDUSD', 'EURGBP',
+            'EURJPY', 'EURCHF', 'GBPJPY', 'AUDJPY'
+        ]
 
-            self.connected = True
+        # Ищем доступные основные пары
+        available_majors = [s for s in symbol_names if s in forex_majors]
 
-            # Проверяем реальное подключение
-            account_info = mt5.account_info()
-            if account_info is None:
-                print("❌ Не удалось получить информацию о счете")
-                mt5.shutdown()
-                self.connected = False
-                return False
+        # Также добавляем популярные пары с постфиксами
+        for symbol in symbol_names:
+            if any(major in symbol for major in forex_majors) and symbol not in available_majors:
+                # Проверяем, что это действительно forex пара
+                if any(postfix in symbol for postfix in ['', 'rfd', 'micro', 'mini']):
+                    available_majors.append(symbol)
 
-            print("✅ Подключено к MT5")
-            print(f"   Счет: {account_info.login}")
-            print(f"   Сервер: {account_info.server}")
-            print(f"   Валюта: {account_info.currency}")
-            print(f"   Баланс: {account_info.balance}")
+        # Сортируем для удобства
+        available_majors.sort()
+        return available_majors
 
-            return True
+    except Exception as e:
+        print(f"❌ Ошибка при получении списка символов: {e}")
+        return []
 
-        except Exception as e:
-            print(f"❌ Исключение при подключении к MT5: {e}")
-            return False
 
-    def get_historical_data(self, symbol: str, bars: int = 1000) -> pd.DataFrame:
-        """Получение исторических данных"""
-        if not self.connected:
-            print("❌ Не подключено к MT5")
-            return None
+def get_all_symbols():
+    """
+    Получает все символы без фильтрации
+    """
+    try:
+        symbols = mt5.symbols_get()
+        symbol_names = [s.name for s in symbols]
+        return symbol_names
+    except Exception as e:
+        print(f"❌ Ошибка при получении списка символов: {e}")
+        return []
 
-        timeframe_str = self.config.get('trading', {}).get('timeframe', 'M15')
-        timeframe_mapping = {
-            'M1': mt5.TIMEFRAME_M1,
-            'M5': mt5.TIMEFRAME_M5,
-            'M15': mt5.TIMEFRAME_M15,
-            'H1': mt5.TIMEFRAME_H1,
-            'H4': mt5.TIMEFRAME_H4,
-            'D1': mt5.TIMEFRAME_D1
-        }
-        timeframe = timeframe_mapping.get(timeframe_str, mt5.TIMEFRAME_M15)
 
-        print(f"📊 Загрузка данных для {symbol} ({bars} баров)")
-
-        try:
-            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-
-            if rates is None:
-                print(f"❌ Не удалось получить данные для {symbol}")
-                return None
-
-            df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            df.set_index('time', inplace=True)
-
-            df.rename(columns={
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'tick_volume': 'tick_volume',
-                'spread': 'spread',
-                'real_volume': 'volume'
-            }, inplace=True)
-
-            print(f"✅ Загружено {len(df)} баров для {symbol}")
-            return df
-
-        except Exception as e:
-            print(f"❌ Ошибка загрузки данных: {e}")
-            return None
-
-    def get_current_data(self, symbol: str, bars: int = 50) -> pd.DataFrame:
-        """Получение текущих данных для торговли"""
-        if not self.connected:
-            print("❌ Не подключено к MT5")
-            return None
-
-        timeframe_str = self.config.get('trading', {}).get('timeframe', 'M15')
-        timeframe_mapping = {
-            'M1': mt5.TIMEFRAME_M1,
-            'M5': mt5.TIMEFRAME_M5,
-            'M15': mt5.TIMEFRAME_M15,
-            'H1': mt5.TIMEFRAME_H1,
-            'H4': mt5.TIMEFRAME_H4,
-            'D1': mt5.TIMEFRAME_D1
-        }
-        timeframe = timeframe_mapping.get(timeframe_str, mt5.TIMEFRAME_M15)
-
-        print(f"📊 Получение текущих данных для {symbol}")
-
-        try:
-            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, bars)
-
-            if rates is None:
-                print(f"❌ Не удалось получить данные для {symbol}")
-                return None
-
-            df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            df.set_index('time', inplace=True)
-
-            df.rename(columns={
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'tick_volume': 'tick_volume',
-                'spread': 'spread',
-                'real_volume': 'volume'
-            }, inplace=True)
-
-            print(f"✅ Получено {len(df)} текущих баров для {symbol}")
-            return df
-
-        except Exception as e:
-            print(f"❌ Ошибка получения текущих данных: {e}")
-            return None
-
-    def get_symbol_info(self, symbol: str) -> Optional[Dict]:
-        """Получение информации о символе"""
-        if not self.connected:
-            return None
-
+def get_symbol_info(symbol):
+    """
+    Получает информацию о конкретном символе
+    """
+    try:
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
-            print(f"❌ Не удалось получить информацию о символе {symbol}")
+            print(f"❌ Символ {symbol} не найден")
             return None
 
         return {
             'name': symbol_info.name,
             'bid': symbol_info.bid,
             'ask': symbol_info.ask,
-            'point': symbol_info.point,
-            'trade_tick_size': symbol_info.trade_tick_size,
-            'trade_tick_value': symbol_info.trade_tick_value,
-            'trade_contract_size': symbol_info.trade_contract_size,
+            'spread': symbol_info.ask - symbol_info.bid,
+            'digits': symbol_info.digits,
             'trade_mode': symbol_info.trade_mode,
-            'trade_stops_level': symbol_info.trade_stops_level,
-            'trade_freeze_level': symbol_info.trade_freeze_level
+            'trade_allowed': symbol_info.trade_allowed
         }
+    except Exception as e:
+        print(f"❌ Ошибка получения информации о символе {symbol}: {e}")
+        return None
 
-    def get_open_positions_count(self) -> int:
-        """Получение количества открытых позиций"""
-        if not self.connected:
-            return 0
 
-        positions = mt5.positions_get()
-        return len(positions) if positions else 0
+def load_data(symbol, timeframe=mt5.TIMEFRAME_M15, bars_count=2000):
+    """
+    Загрузка исторических данных для указанного символа
+    """
+    try:
+        # Проверяем, что символ доступен
+        if not mt5.symbol_select(symbol, True):
+            print(f"❌ Символ {symbol} не доступен для торговли")
+            return pd.DataFrame()
 
-    def get_open_positions(self):
-        """Получение списка открытых позиций"""
-        if not self.connected:
-            return []
+        # Получаем текущее время
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=30)  # Загружаем данные за 30 дней
 
-        positions = mt5.positions_get()
-        return positions if positions else []
+        # Загружаем бары
+        rates = mt5.copy_rates_range(symbol, timeframe, start_time, end_time)
 
-    def close_all_positions(self):
-        """Закрытие всех открытых позиций"""
-        if not self.connected:
-            return False
+        if rates is None or len(rates) == 0:
+            print(f"❌ Не удалось загрузить данные для {symbol}")
+            return pd.DataFrame()
 
-        positions = self.get_open_positions()
-        if not positions:
-            print("✅ Нет открытых позиций для закрытия")
-            return True
+        # Конвертируем в DataFrame
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        df.set_index('time', inplace=True)
 
-        print(f"🔻 Закрытие {len(positions)} позиций...")
+        print(f"✅ Загружено {len(df)} баров для {symbol}")
+        return df
 
-        success_count = 0
-        for position in positions:
-            symbol = position.symbol
-            volume = position.volume
-            position_id = position.ticket
+    except Exception as e:
+        print(f"❌ Ошибка загрузки данных для {symbol}: {e}")
+        return pd.DataFrame()
 
-            # Определяем тип закрывающей сделки
-            if position.type == mt5.ORDER_TYPE_BUY:
-                order_type = mt5.ORDER_TYPE_SELL
-                price = mt5.symbol_info_tick(symbol).bid
-            else:
-                order_type = mt5.ORDER_TYPE_BUY
-                price = mt5.symbol_info_tick(symbol).ask
 
-            # Закрываем позицию
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": volume,
-                "type": order_type,
-                "position": position_id,
-                "price": price,
-                "deviation": 20,
-                "magic": 0,
-                "comment": "Close by robot",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_FOK,
-            }
-
-            result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"✅ Закрыта позиция {position_id} по {symbol}")
-                success_count += 1
-            else:
-                error = self.get_error_description(result.retcode) if result else "Unknown error"
-                print(f"❌ Ошибка закрытия позиции {position_id}: {error}")
-
-        print(f"📊 Результат: закрыто {success_count}/{len(positions)} позиций")
-        return success_count == len(positions)
-
-    def place_order(self, symbol: str, order_type: int, volume: float,
-                    stop_loss: float = 0, take_profit: float = 0) -> bool:
-        """
-        Размещение ордера с исправленными параметрами (решение ошибки 10030)
-        """
-        if not self.connected:
-            print("❌ Не подключено к MT5")
-            return False
-
-        # Получаем актуальную информацию о символе
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            print(f"❌ Символ {symbol} не найден")
-            return False
-
-        if not symbol_info.visible:
-            print(f"🔧 Активируем символ {symbol}...")
-            if not mt5.symbol_select(symbol, True):
-                print(f"❌ Не удалось активировать символ {symbol}")
-                return False
-
-        # Используем правильные цены
+def get_current_price(symbol):
+    """
+    Получает текущую цену для символа
+    """
+    try:
         tick = mt5.symbol_info_tick(symbol)
-        if order_type == mt5.ORDER_TYPE_BUY:
-            price = tick.ask
-        else:
-            price = tick.bid
+        if tick is None:
+            return None, None
 
-        print(f"💰 Текущие цены для {symbol}: Bid={tick.bid:.5f}, Ask={tick.ask:.5f}")
+        return tick.bid, tick.ask
+    except Exception as e:
+        print(f"❌ Ошибка получения цены для {symbol}: {e}")
+        return None, None
 
-        # Ключевое исправление: используем FOK вместо IOC и увеличенный deviation
+
+def place_order(symbol, order_type, lot_size, stop_loss=0.0, take_profit=0.0):
+    """
+    Размещение ордера
+    """
+    try:
+        # Получаем текущую цену
+        bid, ask = get_current_price(symbol)
+        if bid is None or ask is None:
+            return False
+
+        # Определяем параметры ордера
+        if order_type == 'buy':
+            price = ask
+            order_type_mt5 = mt5.ORDER_TYPE_BUY
+            sl = price - stop_loss if stop_loss > 0 else 0
+            tp = price + take_profit if take_profit > 0 else 0
+        else:  # sell
+            price = bid
+            order_type_mt5 = mt5.ORDER_TYPE_SELL
+            sl = price + stop_loss if stop_loss > 0 else 0
+            tp = price - take_profit if take_profit > 0 else 0
+
+        # Подготавливаем запрос
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "volume": volume,
-            "type": order_type,
+            "volume": lot_size,
+            "type": order_type_mt5,
             "price": price,
-            "deviation": 20,  # Увеличенный deviation
-            "magic": 0,  # Без magic number
-            "comment": "AI Trade",
+            "sl": sl,
+            "tp": tp,
+            "deviation": 10,
+            "magic": 234000,
+            "comment": "AI Trader",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_FOK,  # Ключевое изменение!
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        print(f"📤 Отправка ордера:")
-        print(f"   Символ: {symbol}")
-        print(f"   Тип: {'BUY' if order_type == mt5.ORDER_TYPE_BUY else 'SELL'}")
-        print(f"   Объем: {volume}")
-        print(f"   Цена: {price:.5f}")
-        print(f"   SL: {stop_loss:.5f}")
-        print(f"   TP: {take_profit:.5f}")
-
-        # Отправка ордера
+        # Отправляем ордер
         result = mt5.order_send(request)
 
-        if result is None:
-            error = mt5.last_error()
-            print(f"❌ order_send вернул None. Ошибка: {error}")
-            return False
-
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(f"❌ Ошибка ордера {result.retcode}: {self.get_error_description(result.retcode)}")
+            print(f"❌ Ошибка ордера {symbol}: {result.retcode}")
             return False
 
-        print(f"✅ Ордер успешно выполнен!")
-        print(f"   Номер ордера: {result.order}")
-        print(f"   Цена исполнения: {result.price:.5f}")
-        print(f"   Объем: {result.volume}")
-
-        # Если ордер выполнен и указаны SL/TP, пытаемся их установить
-        if stop_loss > 0 or take_profit > 0:
-            self._set_sltp_after_open(symbol, result.order, stop_loss, take_profit)
-
+        print(f"✅ Ордер исполнен: {order_type.upper()} {symbol} {lot_size} лотов")
         return True
 
-    def _set_sltp_after_open(self, symbol: str, order_id: int, stop_loss: float, take_profit: float):
-        """Установка SL/TP после открытия позиции"""
-        try:
-            # Даем время на открытие позиции
-            time.sleep(1)
+    except Exception as e:
+        print(f"❌ Ошибка размещения ордера для {symbol}: {e}")
+        return False
 
-            # Находим позицию по номеру ордера
-            positions = mt5.positions_get(symbol=symbol)
-            if not positions:
-                print("⚠️ Не найдено открытых позиций для установки SL/TP")
-                return
 
-            # Ищем позицию по этому символу
-            position = None
-            for pos in positions:
-                if pos.ticket == order_id:
-                    position = pos
-                    break
+def close_all_orders(symbol=None):
+    """
+    Закрытие всех ордеров (для указанного символа или всех)
+    """
+    try:
+        orders = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
 
-            # Если не нашли по ticket, берем последнюю позицию по символу
-            if position is None and positions:
-                position = positions[-1]
-                print(f"⚠️ Позиция {order_id} не найдена, используем последнюю: {position.ticket}")
+        if orders is None:
+            print("✅ Нет открытых ордеров для закрытия")
+            return True
 
-            if position is None:
-                print("⚠️ Не найдена позиция для установки SL/TP")
-                return
+        closed_count = 0
+        for order in orders:
+            # Определяем тип закрывающей сделки
+            close_type = mt5.ORDER_TYPE_SELL if order.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
 
-            # Модифицируем позицию
-            request = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "position": position.ticket,
-                "sl": stop_loss,
-                "tp": take_profit,
-                "deviation": 20,
-                "magic": 0,
+            close_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "position": order.ticket,
+                "symbol": order.symbol,
+                "volume": order.volume,
+                "type": close_type,
+                "price": mt5.symbol_info_tick(
+                    order.symbol).bid if close_type == mt5.ORDER_TYPE_SELL else mt5.symbol_info_tick(order.symbol).ask,
+                "deviation": 10,
+                "magic": 234000,
+                "comment": "Close AI",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"✅ SL/TP установлены: SL={stop_loss:.5f}, TP={take_profit:.5f}")
+            result = mt5.order_send(close_request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                closed_count += 1
+                print(f"✅ Закрыт ордер {order.ticket} для {order.symbol}")
             else:
-                error_desc = self.get_error_description(result.retcode) if result else "Unknown error"
-                print(f"⚠️ Не удалось установить SL/TP: {error_desc}")
+                print(f"❌ Ошибка закрытия ордера {order.ticket}: {result.retcode}")
 
-        except Exception as e:
-            print(f"⚠️ Ошибка при установке SL/TP: {e}")
+        print(f"📊 Закрыто ордеров: {closed_count}/{len(orders)}")
+        return closed_count == len(orders)
 
-    def get_error_description(self, error_code: int) -> str:
-        """Расшифровка кодов ошибок"""
-        error_descriptions = {
-            10004: "Requote",
-            10006: "Request rejected",
-            10007: "Request canceled by trader",
-            10008: "Order placed",
-            10009: "Request completed",
-            10010: "Only part of the request was completed",
-            10011: "Request processing error",
-            10012: "Request canceled by timeout",
-            10013: "Invalid request",
-            10014: "Invalid volume in the request",
-            10015: "Invalid price in the request",
-            10016: "Invalid stops in the request",
-            10017: "Trade is disabled",
-            10018: "Market is closed",
-            10019: "There are not enough money to complete the request",
-            10020: "Prices changed",
-            10021: "There are no quotes to process the request",
-            10022: "Invalid order expiration date in the request",
-            10023: "Order state changed",
-            10024: "Too frequent requests",
-            10025: "No changes in request",
-            10026: "Autotrading disabled by server",
-            10027: "Autotrading disabled by client terminal",
-            10028: "Request locked for processing",
-            10029: "Order or position frozen",
-            10030: "Invalid S/L or T/P",
-        }
-        return error_descriptions.get(error_code, f"Unknown error {error_code}")
-
-    def disconnect(self):
-        """Отключение от MT5"""
-        if self.connected:
-            mt5.shutdown()
-            self.connected = False
-            print("✅ Отключено от MT5")
+    except Exception as e:
+        print(f"❌ Ошибка при закрытии ордеров: {e}")
+        return False
