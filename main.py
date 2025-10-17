@@ -13,22 +13,44 @@ from datetime import datetime
 # Добавляем путь к src
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_path = os.path.join(current_dir, 'src')
-sys.path.append(src_path)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+# Проверяем наличие MetaTrader5
+try:
+    import MetaTrader5 as mt5
+
+    HAS_MT5 = True
+except ImportError as e:
+    print(f"❌ MetaTrader5 не установлен: {e}")
+    print("💡 Установите: pip install MetaTrader5")
+    HAS_MT5 = False
 
 try:
     from utils.config import load_config
     from core.trader import Trader
-    from core.mt5_client import initialize_mt5, close_all_orders, get_symbol_info
+    from core.mt5_client import initialize_mt5, close_all_orders, get_symbol_info, get_available_symbols
     from ml.model_builder import train_model, load_model_for_symbol, get_available_models
-    from symbol_selector import SymbolSelector
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("💡 Проверьте структуру папок и наличие необходимых файлов")
     sys.exit(1)
 
+# Импортируем symbol_selector отдельно, так как он в корне
+try:
+    sys.path.append(current_dir)
+    from symbol_selector import SymbolSelector
+except ImportError as e:
+    print(f"❌ Ошибка импорта SymbolSelector: {e}")
+    SymbolSelector = None
+
 
 def test_connection():
     """Тестирование подключения к MT5"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
     print("🔍 Тестирование подключения к MT5...")
 
     if not initialize_mt5():
@@ -36,7 +58,6 @@ def test_connection():
         return False
 
     # Проверяем доступные символы
-    from core.mt5_client import get_available_symbols
     symbols = get_available_symbols()
 
     print(f"✅ Подключение к MT5 успешно")
@@ -49,6 +70,10 @@ def test_connection():
 
 def train_mode(symbol=None):
     """Режим обучения модели"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
     config = load_config()
 
     # Определяем символ для обучения
@@ -67,7 +92,7 @@ def train_mode(symbol=None):
         return False
 
     print(f"✅ Символ {training_symbol} доступен для торговли")
-    print(f"   Bid: {symbol_info['bid']}, Ask: {symbol_info['ask']}, Spread: {symbol_info['spread']}")
+    print(f"   Bid: {symbol_info['bid']:.5f}, Ask: {symbol_info['ask']:.5f}, Spread: {symbol_info['spread']:.5f}")
 
     # Запускаем обучение
     return train_model(training_symbol)
@@ -75,6 +100,10 @@ def train_mode(symbol=None):
 
 def trade_mode(symbol=None):
     """Режим торговли"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
     config = load_config()
 
     # Определяем символ для торговли
@@ -100,7 +129,7 @@ def trade_mode(symbol=None):
         return False
 
     print(f"✅ Символ {trading_symbol} доступен")
-    print(f"💰 Текущая цена: Bid={symbol_info['bid']}, Ask={symbol_info['ask']}")
+    print(f"💰 Текущая цена: Bid={symbol_info['bid']:.5f}, Ask={symbol_info['ask']:.5f}")
 
     # Запускаем торговлю
     try:
@@ -127,7 +156,7 @@ def status_mode():
 
     # Статус MT5
     print("\n🔌 Подключение MT5:")
-    if initialize_mt5():
+    if HAS_MT5 and initialize_mt5():
         print("   ✅ Подключено")
 
         # Информация о текущем символе
@@ -135,23 +164,24 @@ def status_mode():
         symbol_info = get_symbol_info(current_symbol)
         if symbol_info:
             print(f"   📊 Текущий символ: {current_symbol}")
-            print(f"   💰 Цена: Bid={symbol_info['bid']}, Ask={symbol_info['ask']}")
-            print(f"   📏 Спред: {symbol_info['spread']}")
+            print(f"   💰 Цена: Bid={symbol_info['bid']:.5f}, Ask={symbol_info['ask']:.5f}")
+            print(f"   📏 Спред: {symbol_info['spread']:.5f}")
         else:
             print(f"   ❌ Символ {current_symbol} недоступен")
     else:
-        print("   ❌ Не подключено")
+        print("   ❌ Не подключено (MetaTrader5 не установлен или недоступен)")
 
     # Статус модели
     print("\n🤖 ML Модель:")
     model_info = config['model']
-    if model_info.get('current_model') and os.path.exists(model_info['current_model']):
-        print(f"   ✅ Модель: {os.path.basename(model_info['current_model'])}")
+    current_model_path = model_info.get('current_model', '')
+    if current_model_path and os.path.exists(current_model_path):
+        print(f"   ✅ Модель: {os.path.basename(current_model_path)}")
         print(f"   🎯 Точность: {model_info.get('accuracy', 'N/A')}")
         print(f"   🔧 Признаков: {model_info.get('features_count', 'N/A')}")
         print(f"   📅 Обучена: {model_info.get('last_trained', 'N/A')}")
     else:
-        print("   ❌ Модель не обучена")
+        print("   ❌ Модель не обучена или файл не найден")
 
     # Доступные модели
     print("\n📚 Доступные модели:")
@@ -178,6 +208,14 @@ def status_mode():
 
 def select_symbol_mode(auto_train=True):
     """Режим выбора символа"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
+    if SymbolSelector is None:
+        print("❌ SymbolSelector не доступен")
+        return False
+
     try:
         selector = SymbolSelector()
         return selector.run_selection_flow(auto_train=auto_train)
@@ -190,6 +228,10 @@ def select_symbol_mode(auto_train=True):
 
 def stop_mode(symbol=None):
     """Режим остановки торговли"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
     print("🛑 Остановка торговли...")
 
     if not initialize_mt5():
@@ -207,13 +249,15 @@ def stop_mode(symbol=None):
 
 def emergency_stop_mode():
     """Аварийная остановка"""
+    if not HAS_MT5:
+        print("❌ MetaTrader5 не установлен")
+        return False
+
     print("🚨 АВАРИЙНАЯ ОСТАНОВКА!")
 
     if not initialize_mt5():
         return False
 
-    # Закрываем все ордера без проверок
-    from core.mt5_client import close_all_orders
     success = close_all_orders()
 
     if success:
@@ -240,6 +284,13 @@ def main():
     print(f"\n🤖 AI Trading Robot v0.1.1")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🎮 Режим: {args.mode}")
+
+    # Проверяем наличие MT5 для режимов, которые его требуют
+    mt5_required_modes = ['test', 'train', 'trade', 'select-symbol', 'stop', 'emergency-stop']
+    if args.mode in mt5_required_modes and not HAS_MT5:
+        print(f"❌ Режим '{args.mode}' требует установки MetaTrader5")
+        print("💡 Установите: pip install MetaTrader5")
+        return False
 
     try:
         if args.mode == 'test':

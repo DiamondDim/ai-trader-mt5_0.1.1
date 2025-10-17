@@ -29,7 +29,7 @@ class Trader:
         try:
             data = load_data(
                 symbol=self.symbol,
-                timeframe=self.config['data']['timeframe'],
+                timeframe_str=self.config['data']['timeframe'],  # ИСПРАВЛЕНО: используем timeframe_str
                 bars_count=100  # Для торговли нужно меньше данных
             )
 

@@ -33,7 +33,7 @@ def train_model(symbol=None):
         # Загрузка данных для конкретного символа
         data = load_data(
             symbol=trading_symbol,
-            timeframe=config['data']['timeframe'],
+            timeframe_str=config['data']['timeframe'],  # ИСПРАВЛЕНО: timeframe -> timeframe_str
             bars_count=config['data']['bars_count']
         )
 
@@ -143,9 +143,9 @@ def load_model_for_symbol(symbol):
             print(f"❌ Папка {models_dir} не существует")
             return None
 
-        # Ищем модели для символа
+        # Ищем модели для символа (правильный формат: model_SYMBOL_YYYYMMDD_HHMM.pkl)
         model_files = [f for f in os.listdir(models_dir)
-                       if f.startswith(f'model_{symbol.upper()}') and f.endswith('.pkl')]
+                       if f.startswith(f'model_{symbol}_') and f.endswith('.pkl')]
 
         if not model_files:
             print(f"❌ Не найдена модель для символа {symbol}")
@@ -184,34 +184,71 @@ def load_model_for_symbol(symbol):
 
 def get_available_models():
     """
-    Получает список всех доступных моделей
+    Получает список всех доступных моделей (только правильного формата)
     """
     try:
         models_dir = 'models'
         if not os.path.exists(models_dir):
             return []
 
-        model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')]
+        # Фильтруем только файлы правильного формата: model_SYMBOL_YYYYMMDD_HHMM.pkl
+        model_files = [f for f in os.listdir(models_dir)
+                       if f.startswith('model_') and f.endswith('.pkl')
+                       and len(f.split('_')) >= 3]  # Должен быть символ и дата
 
         models_info = []
         for model_file in model_files:
-            # Парсим информацию из имени файла
-            parts = model_file.replace('.pkl', '').split('_')
-            if len(parts) >= 3:
-                symbol = parts[1]
-                date_str = parts[2]
-                models_info.append({
-                    'symbol': symbol,
-                    'file': model_file,
-                    'date': date_str,
-                    'path': os.path.join(models_dir, model_file)
-                })
+            try:
+                # Парсим информацию из имени файла
+                # Формат: model_SYMBOL_YYYYMMDD_HHMM.pkl
+                base_name = model_file.replace('.pkl', '')
+                parts = base_name.split('_')
+
+                if len(parts) >= 3:
+                    symbol = parts[1]
+                    date_str = parts[2]
+                    # Проверяем, что date_str похож на дату (YYYYMMDD)
+                    if len(date_str) == 8 and date_str.isdigit():
+                        models_info.append({
+                            'symbol': symbol,
+                            'file': model_file,
+                            'date': date_str,
+                            'path': os.path.join(models_dir, model_file)
+                        })
+            except Exception as e:
+                print(f"⚠️ Не удалось обработать файл модели {model_file}: {e}")
+                continue
 
         return sorted(models_info, key=lambda x: x['date'], reverse=True)
 
     except Exception as e:
         print(f"❌ Ошибка получения списка моделей: {e}")
         return []
+
+
+def delete_old_models(symbol, keep_count=3):
+    """
+    Удаление старых моделей, оставляя только указанное количество самых свежих
+    """
+    try:
+        models = get_available_models()
+        symbol_models = [m for m in models if m['symbol'] == symbol]
+
+        if len(symbol_models) <= keep_count:
+            return
+
+        # Сортируем от старых к новым и удаляем старые
+        old_models = sorted(symbol_models, key=lambda x: x['date'])[:-keep_count]
+
+        for old_model in old_models:
+            try:
+                os.remove(old_model['path'])
+                print(f"🗑️ Удалена старая модель: {old_model['file']}")
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить модель {old_model['file']}: {e}")
+
+    except Exception as e:
+        print(f"❌ Ошибка при удалении старых моделей: {e}")
 
 
 def delete_model(model_path):

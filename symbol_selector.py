@@ -6,21 +6,35 @@ Symbol Selector for AI Trading Robot
 
 import sys
 import os
-import questionary
+import time
 from datetime import datetime
 
 # Добавляем путь к корневой директории проекта
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 
+# Добавляем путь к src
+src_path = os.path.join(current_dir, 'src')
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
 try:
-    from src.core.mt5_client import get_available_symbols, get_all_symbols, initialize_mt5
-    from src.ml.model_builder import train_model
-    from src.utils.config import load_config, save_config
+    from core.mt5_client import get_available_symbols, get_all_symbols, initialize_mt5, get_symbol_info
+    from ml.model_builder import train_model
+    from utils.config import load_config, save_config
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("💡 Проверьте структуру папок и наличие необходимых файлов")
     sys.exit(1)
+
+# Проверяем наличие questionary
+try:
+    import questionary
+
+    HAS_QUESTIONARY = True
+except ImportError:
+    print("❌ Модуль 'questionary' не установлен. Установите его: pip install questionary")
+    HAS_QUESTIONARY = False
 
 
 class SymbolSelector:
@@ -35,10 +49,58 @@ class SymbolSelector:
             return False
         return True
 
+    def select_symbol_simple(self):
+        """
+        Простой выбор символа без questionary
+        """
+        print("\n🎯 ВЫБОР ВАЛЮТНОЙ ПАРЫ ДЛЯ ТОРГОВЛИ")
+        print("=" * 50)
+
+        print("🔍 Получение списка доступных символов из MT5...")
+
+        # Получаем символы
+        major_pairs = get_available_symbols()
+
+        if not major_pairs:
+            print("❌ Не удалось получить символы из MT5")
+            return None
+
+        print(f"✅ Найдено {len(major_pairs)} основных пар")
+
+        # Показываем список
+        print("\n📈 Доступные основные пары:")
+        for i, pair in enumerate(major_pairs, 1):
+            print(f"   {i}. {pair}")
+
+        # Простой ввод
+        try:
+            choice = input(f"\nВыберите пару (1-{len(major_pairs)} или введите название): ").strip()
+
+            if choice.isdigit():
+                index = int(choice) - 1
+                if 0 <= index < len(major_pairs):
+                    return major_pairs[index]
+                else:
+                    print("❌ Неверный номер")
+                    return None
+            else:
+                # Проверяем, есть ли введенный символ в доступных
+                if choice.upper() in major_pairs:
+                    return choice.upper()
+                else:
+                    print(f"❌ Символ {choice} не найден в основных парах")
+                    return None
+
+        except (ValueError, KeyboardInterrupt):
+            return None
+
     def select_symbol_interactive(self):
         """
         Интерактивный выбор валютной пары с красивым интерфейсом
         """
+        if not HAS_QUESTIONARY:
+            return self.select_symbol_simple()
+
         print("\n🎯" + "=" * 60)
         print("           ВЫБОР ВАЛЮТНОЙ ПАРЫ ДЛЯ ТОРГОВЛИ")
         print("=" * 60)
@@ -129,6 +191,12 @@ class SymbolSelector:
 
         print(f"\n⚙️  Настройка конфигурации для символа: {symbol}")
 
+        # Проверяем доступность символа
+        symbol_info = get_symbol_info(symbol)
+        if not symbol_info:
+            print(f"❌ Символ {symbol} недоступен в MT5")
+            return False
+
         # Обновляем конфигурацию
         self.config['trading']['symbol'] = symbol
         self.config['model']['symbol'] = symbol
@@ -144,6 +212,7 @@ class SymbolSelector:
         print(f"   Тип символа: {symbol_type}")
         print(f"   Лот: {self.config['trading']['lot_size']}")
         print(f"   Таймфрейм: {self.config['data']['timeframe']}")
+        print(f"   Текущая цена: Bid={symbol_info['bid']:.5f}, Ask={symbol_info['ask']:.5f}")
 
         return True
 
@@ -164,7 +233,7 @@ class SymbolSelector:
 
     def _apply_symbol_specific_settings(self, symbol, symbol_type):
         """Применяет специфичные настройки для типа символа"""
-        symbol_settings = self.config['symbol_specific'].get(symbol, {})
+        symbol_settings = self.config.get('symbol_specific', {}).get(symbol, {})
 
         if symbol_settings:
             # Используем настройки для конкретного символа
@@ -225,7 +294,10 @@ class SymbolSelector:
             return False
 
         # Выбор символа
-        symbol = self.select_symbol_interactive()
+        if HAS_QUESTIONARY:
+            symbol = self.select_symbol_interactive()
+        else:
+            symbol = self.select_symbol_simple()
 
         if not symbol:
             print("❌ Выбор символа отменен")
