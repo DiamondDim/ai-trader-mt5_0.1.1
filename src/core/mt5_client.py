@@ -31,6 +31,16 @@ def initialize_mt5():
             return False
 
         print("✅ MetaTrader5 успешно инициализирован")
+
+        # Проверяем информацию о счете
+        account_info = mt5.account_info()
+        if account_info:
+            print(f"✅ Счет: {account_info.login}, Баланс: {account_info.balance:.2f}")
+            print(f"💰 Валюта счета: {account_info.currency}")
+            print(f"🔧 Торговый режим: {'Демо' if account_info.trade_mode == 1 else 'Реальный'}")
+        else:
+            print("⚠️ Не удалось получить информацию о счете")
+
         return True
     except Exception as e:
         print(f"❌ Ошибка инициализации MT5: {e}")
@@ -110,7 +120,7 @@ def get_symbol_info(symbol):
             print(f"❌ Символ {symbol} не найден")
             return None
 
-        # Безопасное получение атрибутов (некоторые могут отсутствовать в разных версиях MT5)
+        # Безопасное получение атрибутов
         info_dict = {
             'name': symbol_info.name,
             'bid': getattr(symbol_info, 'bid', 0),
@@ -120,6 +130,10 @@ def get_symbol_info(symbol):
             'trade_mode': getattr(symbol_info, 'trade_mode', 0),
             'point': getattr(symbol_info, 'point', 0.00001),
             'trade_stops_level': getattr(symbol_info, 'trade_stops_level', 0),
+            'trade_contract_size': getattr(symbol_info, 'trade_contract_size', 100000),
+            'currency_base': getattr(symbol_info, 'currency_base', ''),
+            'currency_profit': getattr(symbol_info, 'currency_profit', ''),
+            'currency_margin': getattr(symbol_info, 'currency_margin', ''),
         }
 
         # Вычисляем спред, если он не доступен напрямую
@@ -140,7 +154,6 @@ def get_symbol_info(symbol):
 def load_data(symbol, timeframe="M15", bars_count=2000, timeframe_str=None):
     """
     Загрузка исторических данных для указанного символа
-    Обратная совместимость: поддерживает оба параметра timeframe и timeframe_str
     """
     if not HAS_MT5:
         return pd.DataFrame()
@@ -172,27 +185,11 @@ def load_data(symbol, timeframe="M15", bars_count=2000, timeframe_str=None):
 
         print(f"🔍 Загрузка данных для {symbol} (таймфрейм: {timeframe}, баров: {bars_count})")
 
-        # Пробуем разные методы загрузки данных
-
-        # Метод 1: Загрузка по количеству баров (более надежный)
+        # Загрузка данных
         rates = mt5.copy_rates_from(symbol, timeframe_num, datetime.now(), bars_count)
 
         if rates is None or len(rates) == 0:
-            print(f"⚠️ Метод 1 не сработал, пробуем метод 2...")
-            # Метод 2: Загрузка за последние 30 дней
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=30)
-            rates = mt5.copy_rates_range(symbol, timeframe_num, start_time, end_time)
-
-        if rates is None or len(rates) == 0:
-            print(f"⚠️ Метод 2 не сработал, пробуем метод 3...")
-            # Метод 3: Загрузка с начала года
-            start_time = datetime(datetime.now().year, 1, 1)
-            rates = mt5.copy_rates_range(symbol, timeframe_num, start_time, datetime.now())
-
-        if rates is None or len(rates) == 0:
-            print(f"❌ Все методы загрузки данных для {symbol} не сработали")
-            print(f"💡 Проверьте доступность исторических данных в MT5")
+            print(f"❌ Не удалось загрузить данные для {symbol}")
             return pd.DataFrame()
 
         # Конвертируем в DataFrame
@@ -230,109 +227,194 @@ def get_current_price(symbol):
         return None, None
 
 
-def place_order(symbol, order_type, lot_size, stop_loss=0.0, take_profit=0.0, max_retries=3):
+def check_trading_allowed(symbol):
     """
-    Размещение ордера с обработкой ошибок и повторными попытками
+    Проверяет, разрешена ли торговля для символа
     """
     if not HAS_MT5:
         return False
 
-    for attempt in range(max_retries):
-        try:
-            # Получаем текущую цену
-            bid, ask = get_current_price(symbol)
-            if bid is None or ask is None:
-                print(f"❌ Не удалось получить текущие цены для {symbol}")
-                time.sleep(1)
-                continue
+    try:
+        # Проверяем информацию о символе
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            print(f"❌ Символ {symbol} не найден")
+            return False
 
-            # Получаем информацию о символе для проверки минимальных расстояний
-            symbol_info = get_symbol_info(symbol)
-            if not symbol_info:
-                print(f"❌ Не удалось получить информацию о символе {symbol}")
-                return False
+        # Проверяем, разрешена ли торговля
+        if symbol_info.trade_mode != 0:  # 0 = SYMBOL_TRADE_MODE_DISABLED
+            print(f"✅ Торговля разрешена для {symbol}")
+            return True
+        else:
+            print(f"❌ Торговля запрещена для {symbol}")
+            return False
 
-            # Определяем параметры ордера
-            if order_type == 'buy':
-                price = ask
-                order_type_mt5 = mt5.ORDER_TYPE_BUY
-                # Для BUY: SL ниже цены, TP выше цены
-                sl = price - stop_loss if stop_loss > 0 else 0
-                tp = price + take_profit if take_profit > 0 else 0
-            else:  # sell
-                price = bid
-                order_type_mt5 = mt5.ORDER_TYPE_SELL
-                # Для SELL: SL выше цены, TP ниже цены
-                sl = price + stop_loss if stop_loss > 0 else 0
-                tp = price - take_profit if take_profit > 0 else 0
+    except Exception as e:
+        print(f"❌ Ошибка проверки торговли для {symbol}: {e}")
+        return False
 
-            # Проверяем минимальные расстояния для стоп-лосса и тейк-профита
-            point = symbol_info.get('point', 0.00001)
-            stops_level = symbol_info.get('trade_stops_level', 10)  # Минимальное расстояние в пунктах
 
-            if stop_loss > 0:
-                min_sl_distance = stops_level * point
-                if order_type == 'buy' and (price - sl) < min_sl_distance:
-                    print(f"⚠️ Стоп-лосс слишком близко к цене. Корректируем...")
-                    sl = price - min_sl_distance * 2  # Устанавливаем в 2 раза дальше минимума
-                elif order_type == 'sell' and (sl - price) < min_sl_distance:
-                    sl = price + min_sl_distance * 2
+def place_order_simple(symbol, order_type, lot_size):
+    """
+    Простое размещение ордера БЕЗ стоп-лосса и тейк-профита
+    """
+    if not HAS_MT5:
+        return False
 
-            if take_profit > 0:
-                min_tp_distance = stops_level * point
-                if order_type == 'buy' and (tp - price) < min_tp_distance:
-                    print(f"⚠️ Тейк-профит слишком близко к цене. Корректируем...")
-                    tp = price + min_tp_distance * 2
-                elif order_type == 'sell' and (price - tp) < min_tp_distance:
-                    tp = price - min_tp_distance * 2
+    try:
+        # Проверяем, разрешена ли торговля
+        if not check_trading_allowed(symbol):
+            return False
 
-            # Подготавливаем запрос
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lot_size,
-                "type": order_type_mt5,
-                "price": price,
-                "sl": sl,
-                "tp": tp,
-                "deviation": 20,  # Увеличиваем отклонение
-                "magic": 234000,
-                "comment": f"AI Trader #{attempt + 1}",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
+        # Получаем текущую цену
+        bid, ask = get_current_price(symbol)
+        if bid is None or ask is None:
+            print(f"❌ Не удалось получить текущие цены для {symbol}")
+            return False
 
-            print(f"🔧 Попытка {attempt + 1}: {order_type.upper()} {symbol} {lot_size} лотов")
-            print(f"   💰 Цена: {price:.5f}, SL: {sl:.5f}, TP: {tp:.5f}")
+        # Определяем параметры ордера
+        if order_type == 'buy':
+            price = ask
+            order_type_mt5 = mt5.ORDER_TYPE_BUY
+        else:  # sell
+            price = bid
+            order_type_mt5 = mt5.ORDER_TYPE_SELL
 
-            # Отправляем ордер
-            result = mt5.order_send(request)
+        # Подготавливаем простой запрос БЕЗ SL/TP
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": order_type_mt5,
+            "price": price,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "AI Trader Simple",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
 
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"✅ Ордер исполнен: {order_type.upper()} {symbol} {lot_size} лотов")
-                print(f"   📊 Номер ордера: {result.order}")
-                return True
-            else:
-                error_msg = get_error_description(result.retcode)
-                print(f"❌ Ошибка ордера {symbol} (попытка {attempt + 1}): {result.retcode} - {error_msg}")
+        print(f"🔧 Отправка ордера: {order_type.upper()} {symbol} {lot_size} лотов")
+        print(f"   💰 Цена: {price:.5f}")
 
-                # Если это ошибка цены, пробуем с новыми ценами
-                if result.retcode in [10008, 10010, 10011, 10012, 10013, 10014, 10015, 10016, 10017, 10018, 10019,
-                                      10020, 10021, 10022, 10023, 10024, 10025, 10026, 10027, 10028, 10029, 10030]:
-                    print(f"🔄 Получаем новые цены и пробуем снова...")
-                    time.sleep(1)
-                    continue
-                else:
-                    # Для других ошибок не повторяем
-                    break
+        # Отправляем ордер
+        result = mt5.order_send(request)
 
-        except Exception as e:
-            print(f"❌ Исключение при размещении ордера для {symbol}: {e}")
-            time.sleep(1)
-            continue
+        # Проверяем, что результат не None
+        if result is None:
+            print(f"❌ MT5 вернул None при отправке ордера")
+            print(f"💡 Проверьте подключение к MT5 и настройки счета")
+            return False
 
-    print(f"💥 Не удалось разместить ордер после {max_retries} попыток")
-    return False
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"✅ Ордер исполнен: {order_type.upper()} {symbol} {lot_size} лотов")
+            print(f"   📊 Номер ордера: {result.order}")
+            return True
+        else:
+            error_msg = get_error_description(result.retcode)
+            print(f"❌ Ошибка ордера {symbol}: {result.retcode} - {error_msg}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Исключение при размещении ордера для {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def place_order_with_sltp(symbol, order_type, lot_size, stop_loss_pips, take_profit_pips):
+    """
+    Размещение ордера со стоп-лоссом и тейк-профитом (в пипсах)
+    """
+    if not HAS_MT5:
+        return False
+
+    try:
+        # Проверяем, разрешена ли торговля
+        if not check_trading_allowed(symbol):
+            return False
+
+        # Получаем текущую цену
+        bid, ask = get_current_price(symbol)
+        if bid is None or ask is None:
+            print(f"❌ Не удалось получить текущие цены для {symbol}")
+            return False
+
+        # Получаем информацию о символе
+        symbol_info = get_symbol_info(symbol)
+        if not symbol_info:
+            return False
+
+        # Определяем параметры ордера
+        if order_type == 'buy':
+            price = ask
+            order_type_mt5 = mt5.ORDER_TYPE_BUY
+            # Для BUY: SL ниже цены, TP выше цены
+            sl = price - (stop_loss_pips * 0.0001) if stop_loss_pips > 0 else 0
+            tp = price + (take_profit_pips * 0.0001) if take_profit_pips > 0 else 0
+        else:  # sell
+            price = bid
+            order_type_mt5 = mt5.ORDER_TYPE_SELL
+            # Для SELL: SL выше цены, TP ниже цены
+            sl = price + (stop_loss_pips * 0.0001) if stop_loss_pips > 0 else 0
+            tp = price - (take_profit_pips * 0.0001) if take_profit_pips > 0 else 0
+
+        # Подготавливаем запрос с SL/TP
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": order_type_mt5,
+            "price": price,
+            "sl": sl,
+            "tp": tp,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "AI Trader SL/TP",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        print(f"🔧 Отправка ордера: {order_type.upper()} {symbol} {lot_size} лотов")
+        print(f"   💰 Цена: {price:.5f}, SL: {sl:.5f}, TP: {tp:.5f}")
+
+        # Отправляем ордер
+        result = mt5.order_send(request)
+
+        # Проверяем, что результат не None
+        if result is None:
+            print(f"❌ MT5 вернул None при отправке ордера")
+            return False
+
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"✅ Ордер исполнен: {order_type.upper()} {symbol} {lot_size} лотов")
+            print(f"   📊 Номер ордера: {result.order}")
+            return True
+        else:
+            error_msg = get_error_description(result.retcode)
+            print(f"❌ Ошибка ордера {symbol}: {result.retcode} - {error_msg}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Исключение при размещении ордера для {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def place_order(symbol, order_type, lot_size, stop_loss=0.0, take_profit=0.0):
+    """
+    Универсальная функция размещения ордера
+    """
+    # Если указаны стоп-лосс и тейк-профит, используем функцию с SL/TP
+    if stop_loss > 0 or take_profit > 0:
+        # Конвертируем в пипсы (предполагаем, что stop_loss и take_profit в цене)
+        stop_loss_pips = int(stop_loss / 0.0001) if stop_loss > 0 else 0
+        take_profit_pips = int(take_profit / 0.0001) if take_profit > 0 else 0
+        return place_order_with_sltp(symbol, order_type, lot_size, stop_loss_pips, take_profit_pips)
+    else:
+        # Используем простую функцию без SL/TP
+        return place_order_simple(symbol, order_type, lot_size)
 
 
 def get_error_description(error_code):
@@ -415,12 +497,12 @@ def close_all_orders(symbol=None):
             }
 
             result = mt5.order_send(close_request)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 closed_count += 1
                 print(f"✅ Закрыт ордер {order.ticket} для {order.symbol}")
             else:
-                error_msg = get_error_description(result.retcode)
-                print(f"❌ Ошибка закрытия ордера {order.ticket}: {result.retcode} - {error_msg}")
+                error_msg = get_error_description(result.retcode) if result else "None result"
+                print(f"❌ Ошибка закрытия ордера {order.ticket}: {error_msg}")
 
         print(f"📊 Закрыто ордеров: {closed_count}/{len(orders)}")
         return closed_count == len(orders)

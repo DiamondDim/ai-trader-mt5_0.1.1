@@ -151,10 +151,10 @@ class Trader:
         prediction = prediction_result['prediction']
         confidence = prediction_result['confidence']
 
-        # Конвертируем пипы в цену (для forex 1 пип = 0.0001 для большинства пар)
-        pip_value = 0.0001
-        stop_loss_pips = self.symbol_config.get('stop_loss_pips', 20)
-        take_profit_pips = self.symbol_config.get('take_profit_pips', 30)
+        # Убираем SL/TP для тестирования
+        # pip_value = 0.0001
+        # stop_loss_pips = self.symbol_config.get('stop_loss_pips', 20)
+        # take_profit_pips = self.symbol_config.get('take_profit_pips', 30)
 
         # Определяем тип ордера
         if prediction == 1:  # BUY
@@ -163,8 +163,8 @@ class Trader:
                 symbol=self.symbol,
                 order_type='buy',
                 lot_size=self.symbol_config['lot_size'],
-                stop_loss=stop_loss_pips * pip_value,
-                take_profit=take_profit_pips * pip_value
+                # stop_loss=stop_loss_pips * pip_value,  # Закомментировать
+                # take_profit=take_profit_pips * pip_value  # Закомментировать
             )
         else:  # SELL
             print(f"📉 Сигнал SELL для {self.symbol} (уверенность: {confidence:.2f})")
@@ -172,9 +172,15 @@ class Trader:
                 symbol=self.symbol,
                 order_type='sell',
                 lot_size=self.symbol_config['lot_size'],
-                stop_loss=stop_loss_pips * pip_value,
-                take_profit=take_profit_pips * pip_value
+                # stop_loss=stop_loss_pips * pip_value,  # Закомментировать
+                # take_profit=take_profit_pips * pip_value  # Закомментировать
             )
+
+        if success:
+            print("✅ Торговая операция выполнена")
+        else:
+            print("❌ Ошибка выполнения торговой операции")
+
 
         if success:
             print("✅ Торговая операция выполнена")
